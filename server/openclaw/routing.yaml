@@ -1,0 +1,57 @@
+# OpenClaw — Cloud Model Routing Configuration
+#
+# Default cloud path: OpenAI (GPT-4o via ChatGPT CLI)
+# Specialist path:    Anthropic (Claude) for coding, architecture, long-context
+
+routing:
+  # Default provider for all cloud-escalated requests
+  default_provider: "openai"
+  default_model: "gpt-4o"
+
+  # Provider-specific configs
+  providers:
+    openai:
+      model: "gpt-4o"
+      access: "chatgpt-cli"  # Via ChatGPT Pro subscription CLI
+      max_tokens: 4096
+      timeout_ms: 10000
+
+    anthropic:
+      model: "claude-sonnet"
+      access: "api"  # Via Max subscription API
+      max_tokens: 8192
+      timeout_ms: 15000
+
+  # Rules evaluated in order — first match wins
+  rules:
+    - name: "long-context-auto-route"
+      condition:
+        input_tokens_gt: 100000
+      provider: "anthropic"
+      reason: "Claude handles 100K+ token contexts more effectively"
+
+    - name: "coding-tasks"
+      condition:
+        task_type:
+          - "code_generation"
+          - "code_review"
+          - "debugging"
+          - "refactoring"
+        multi_file: true
+      provider: "anthropic"
+      reason: "Claude excels at complex multi-file coding tasks"
+
+    - name: "architecture"
+      condition:
+        task_type:
+          - "architecture"
+          - "system_design"
+          - "technical_planning"
+      provider: "anthropic"
+      reason: "Claude provides stronger architectural reasoning"
+
+    - name: "default-cloud"
+      condition:
+        fallback: true
+      provider: "openai"
+      reason: "GPT-4o as fast general-purpose cloud escalation"

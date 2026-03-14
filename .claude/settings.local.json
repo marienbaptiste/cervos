@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude_ai_Notion__notion-search",
+      "mcp__claude_ai_Notion__notion-fetch",
+      "WebFetch(domain:medium.muz.li)",
+      "WebFetch(domain:muz.li)",
+      "WebFetch(domain:medium.com)",
+      "WebSearch",
+      "WebFetch(domain:webcache.googleusercontent.com)",
+      "WebFetch(domain:12ft.io)"
+    ]
+  }
+}

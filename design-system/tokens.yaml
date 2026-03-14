@@ -1,0 +1,51 @@
+# Cervos Design System — Color & Spacing Tokens
+
+colors:
+  primary: "#1A73E8"
+  secondary: "#5F6368"
+  accent: "#FBBC04"
+  warning: "#F9AB00"
+  error: "#EA4335"
+
+  # Dark UI elevation surfaces (no pure black — eerie black base)
+  # Each level lightens base by ~4-5%, creating depth via color not shadows
+  elevation:
+    level_0: "#1E1F22"   # Base background (0dp) — HSL 225, 5, 15
+    level_1: "#252629"   # Cards, nav bars (1dp) — lighten +4%
+    level_2: "#2C2D32"   # Elevated cards, containers (3dp) — lighten +6%
+    level_3: "#323438"   # Modals, dialogs (6dp) — lighten +8%
+    level_4: "#393C41"   # Hover/focus states (8dp) — lighten +10%
+
+  # Text colors for dark surfaces
+  text:
+    primary: "#E8E8E8"     # High-emphasis text (not pure white — reduces glare)
+    secondary: "#B0B0B0"   # Medium-emphasis text
+    disabled: "#6B6B6B"    # Disabled / placeholder text
+    on_accent: "#FFFFFF"   # Text on accent-colored surfaces
+
+  # Model badge colors
+  model_badge:
+    on_device: "#34A853"   # Green — Gemini Nano
+    local: "#F9AB00"       # Amber — mlx-lm (Qwen/Llama)
+    cloud: "#4285F4"       # Blue — GPT-4o / Claude
+
+  # Permission tiers
+  permission:
+    always_allowed: "#34A853"  # Green
+    confirm_glasses: "#F9AB00" # Amber
+    require_unlock: "#EA4335"  # Red
+
+typography:
+  font_family: "Inter"
+  scale:
+    h1: { size: 28, weight: 700, line_height: 36 }
+    h2: { size: 22, weight: 600, line_height: 28 }
+    h3: { size: 18, weight: 600, line_height: 24 }
+    body: { size: 16, weight: 400, line_height: 24 }
+    caption: { size: 12, weight: 400, line_height: 16 }
+    badge: { size: 10, weight: 600, line_height: 14 }
+    glasses_mono: { size: 14, weight: 500, line_height: 18, font_family: "monospace" }
+
+spacing:
+  scale: [4, 8, 12, 16, 24, 32, 48]
+  unit: "dp"

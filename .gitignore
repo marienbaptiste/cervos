@@ -1,0 +1,53 @@
+# Config with secrets
+config.yaml
+
+# Data
+data/
+*.db
+*.db-journal
+
+# Certificates (generated)
+server/nginx/certs/*.key
+server/nginx/certs/*.crt
+server/nginx/certs/*.csr
+server/nginx/certs/*.srl
+
+# Models (large files)
+server/models/mlx/*
+server/models/ollama/*
+server/models/stt/*
+!server/models/**/.gitkeep
+
+# Flutter
+mobile/.dart_tool/
+mobile/.packages
+mobile/build/
+mobile/.flutter-plugins
+mobile/.flutter-plugins-dependencies
+mobile/pubspec.lock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml

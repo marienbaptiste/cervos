@@ -1,0 +1,40 @@
+name: Design System Lint
+
+on:
+  push:
+    paths:
+      - 'design-system/**'
+  pull_request:
+    paths:
+      - 'design-system/**'
+
+jobs:
+  design-lint:
+    name: Validate Design System
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tokens
+        run: |
+          python3 -c "
+          import yaml
+          tokens = yaml.safe_load(open('design-system/tokens.yaml'))
+          assert 'colors' in tokens, 'Missing colors'
+          assert 'typography' in tokens, 'Missing typography'
+          assert 'spacing' in tokens, 'Missing spacing'
+          print('Tokens: OK')
+          "
+
+      - name: Validate components
+        run: |
+          python3 -c "
+          import yaml
+          comp = yaml.safe_load(open('design-system/components.yaml'))
+          assert 'components' in comp, 'Missing components'
+          names = [c['name'] for c in comp['components']]
+          required = ['TextBlock', 'Card', 'Badge', 'ActionButton', 'ConfirmPrompt']
+          for r in required:
+              assert r in names, f'Missing required component: {r}'
+          print(f'Components: {len(names)} defined, OK')
+          "

@@ -1,0 +1,80 @@
+# Cervos — Ambient AI Assistant Configuration
+# Copy this file to config.yaml and fill in your values.
+
+# Tailscale
+tailscale:
+  auth_key: ""  # Your Tailscale auth key
+
+# API Keys
+api_keys:
+  openai: ""      # OpenAI API key (GPT-4o access)
+  anthropic: ""   # Anthropic API key (Claude access)
+
+# Server
+server:
+  host: "0.0.0.0"
+  nginx_port: 443
+  mlx_port: 8080
+  whisper_port: 8081
+  pyannote_port: 8082
+  ollama_port: 11434
+  searxng_port: 8888
+  chroma_port: 8500
+  console_port: 9090
+  openclaw_port: 8000
+
+# Models
+models:
+  primary_llm: "qwen2.5-32b-instruct-q4"
+  fast_llm: "llama-3.1-8b-instruct-q4"
+  stt_primary: "whisper-large-v3"
+  stt_fast: "whisper-distil-medium-en"
+  cloud_primary: "gpt-4o"
+  cloud_specialist: "claude-sonnet"
+
+# Cloud routing
+cloud:
+  enabled: true
+  kill_switch_path: "/var/run/cloud-enabled"
+  default_provider: "openai"  # openai | anthropic
+
+  # Provider selection rules — OpenClaw uses these to route cloud requests
+  routing_rules:
+    # Default: all cloud requests go to OpenAI (GPT-4o)
+    default: "openai"
+
+    # Route to Anthropic (Claude) for these task types
+    anthropic_routes:
+      - task: "coding"           # Multi-file code generation, debugging
+      - task: "architecture"     # System design, architectural reasoning
+      - task: "long_context"     # When input exceeds long_context_threshold
+
+    # Auto-route to Claude when input tokens exceed this threshold
+    long_context_threshold: 100000
+
+# Rate limiting
+rate_limit:
+  requests_per_minute: 100
+
+# Persistence
+persistence:
+  sqlite_path: "./data/cervos.db"
+  chroma_path: "./data/chroma"
+  audit_log_path: "./data/audit.jsonl"
+  template_store_path: "./data/templates"
+
+# BLE devices
+devices:
+  glasses: "Even Realities G2"
+  ring: "R1"
+
+# Notifications
+notifications:
+  priority_filter: true
+  calendar_pre_alert_minutes: 5
+
+# Journal
+journal:
+  biometric_timeout_minutes: 5
+  max_failed_attempts: 5
+  lockout_threshold: 15

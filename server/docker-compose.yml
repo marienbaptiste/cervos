@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: cervos-nginx
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - /var/run/cloud-enabled:/var/run/cloud-enabled:ro
+    depends_on:
+      - openclaw
+    restart: unless-stopped
+
+  openclaw:
+    build: ./openclaw
+    container_name: cervos-openclaw
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      - ../data:/app/data
+    environment:
+      - MLX_LM_URL=http://host.docker.internal:8080
+      - WHISPER_URL=http://host.docker.internal:8081
+      - SEARXNG_URL=http://searxng:8888
+      - CHROMA_URL=http://chroma:8500
+    depends_on:
+      - searxng
+      - chroma
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: cervos-searxng
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./search/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: unless-stopped
+
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: cervos-chroma
+    ports:
+      - "8500:8000"
+    volumes:
+      - ../data/chroma:/chroma/chroma
+    restart: unless-stopped
+
+  console:
+    build: ../console
+    container_name: cervos-console
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../data/audit.jsonl:/app/audit.jsonl:ro
+    restart: unless-stopped

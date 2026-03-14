@@ -1,0 +1,55 @@
+# Cervos Design System — Component Library
+# The UI generator can only compose from these primitives.
+
+components:
+  - name: TextBlock
+    description: Simple text display with optional styling
+    props: [text, style, maxLines]
+
+  - name: Card
+    description: Elevated container for grouped content
+    props: [title, subtitle, body, actions, elevation]
+
+  - name: ListItem
+    description: Single row in a list with optional leading/trailing widgets
+    props: [title, subtitle, leading, trailing, onTap]
+
+  - name: Badge
+    description: Small label for model tier, status, or category
+    props: [text, color, icon]
+
+  - name: ActionButton
+    description: Tappable button for user actions
+    props: [label, icon, onTap, style, permissionTier]
+
+  - name: MapView
+    description: Embedded map display with markers and routes
+    props: [center, zoom, markers, route]
+
+  - name: ImageView
+    description: Image display with optional caption
+    props: [source, caption, fit]
+
+  - name: ChartView
+    description: Data visualization (bar, line, pie)
+    props: [type, data, labels, colors]
+
+  - name: Timeline
+    description: Chronological list of events (used in action journal)
+    props: [entries, groupBy]
+
+  - name: CodeBlock
+    description: Syntax-highlighted code display
+    props: [code, language, lineNumbers]
+
+  - name: ConfirmPrompt
+    description: Permission confirmation dialog (maps to glasses prompt)
+    props: [message, confirmAction, cancelAction, permissionTier]
+
+  - name: PaginatedText
+    description: Multi-page text for glasses display (~15 chars wide)
+    props: [pages, currentPage]
+
+  - name: CaptionStream
+    description: Live caption display with speaker labels
+    props: [captions, showSpeaker, autoScroll]
