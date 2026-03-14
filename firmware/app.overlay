@@ -1,15 +1,27 @@
 /*
- * Devicetree overlay for nRF52840 Dongle
- * Enables USB and configures status LED for audio activity indication.
+ * Devicetree overlay for nRF52840 Dongle — "cervhole headset"
+ * USB Audio Class with headphones + microphone (Windows needs both).
+ * Matches the working Zephyr USB audio sample configuration.
  */
 
 &zephyr_udc0 {
 	status = "okay";
-};
 
-/* Use the green LED on the nRF52840 dongle (LED0 / P0.06) as audio activity indicator */
-/ {
-	aliases {
-		audio-led = &led0;
+	hp_0 {
+		compatible = "usb-audio-hp";
+		feature-mute;
+		channel-l;
+		channel-r;
+
+		feature-volume;
+		volume-max = <0x0500>;
+		volume-min = <0xBA00>;
+		volume-res = <0x100>;
+	};
+	mic_0 {
+		compatible = "usb-audio-mic";
+		feature-mute;
+		channel-l;
+		channel-r;
 	};
 };

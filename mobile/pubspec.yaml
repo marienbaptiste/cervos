@@ -22,7 +22,7 @@ dependencies:
   flutter_pcm_sound: ^1.0.0
 
   # FFT for spectrogram
-  fft: ^2.1.0
+  fft: ^0.5.1
 
   # UI
   google_fonts: ^6.1.0

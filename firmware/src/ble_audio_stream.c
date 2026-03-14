@@ -125,30 +125,34 @@ static void notify_sent_cb(struct bt_conn *conn, void *user_data)
  */
 int ble_audio_send_frame(const int16_t *pcm_data, size_t samples)
 {
-    if (!current_conn || !notify_enabled) {
+    if (!current_conn) {
         return -ENOTCONN;
     }
 
-    /* Backpressure: don't queue too many notifications */
-    if (notifications_in_flight >= MAX_NOTIFICATIONS_IN_FLIGHT) {
-        LOG_WRN("BLE TX backpressure — dropping frame");
-        return -ENOMEM;
-    }
+    const uint8_t *data = (const uint8_t *)pcm_data;
+    size_t total_len = samples * sizeof(int16_t);
 
-    struct bt_gatt_notify_params params = {
-        .attr = &cervos_audio_svc.attrs[2], /* Audio stream characteristic value */
-        .data = pcm_data,
-        .len = samples * sizeof(int16_t),
-        .func = notify_sent_cb,
-    };
+    /* Split into chunks that fit within ATT MTU.
+     * ATT header = 3 bytes, so max payload = MTU - 3 = 244 bytes.
+     * Use 240 bytes per chunk for safety. */
+    const size_t chunk_size = 240;
+    size_t offset = 0;
+    int ret = 0;
 
-    int ret = bt_gatt_notify_cb(current_conn, &params);
-    if (ret == 0) {
-        notifications_in_flight++;
-    } else if (ret == -ENOMEM) {
-        LOG_WRN("BLE notify buffer full — dropping frame");
-    } else {
-        LOG_ERR("BLE notify failed: %d", ret);
+    while (offset < total_len) {
+        size_t len = total_len - offset;
+        if (len > chunk_size) {
+            len = chunk_size;
+        }
+
+        ret = bt_gatt_notify(current_conn,
+                             &cervos_audio_svc.attrs[2],
+                             &data[offset],
+                             len);
+        if (ret != 0) {
+            break;
+        }
+        offset += len;
     }
 
     return ret;

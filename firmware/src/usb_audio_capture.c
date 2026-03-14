@@ -5,13 +5,14 @@
  * The work PC sets this as the audio output in Zoom/Teams/Meet.
  * Meeting audio flows to the dongle digitally via USB.
  *
+ * USB receives 48kHz stereo 16-bit PCM from the work PC.
+ * We mix stereo→mono and downsample 3:1 to 16kHz mono,
+ * then write 20ms frames (320 samples = 640 bytes) to the ring buffer
+ * for BLE streaming.
+ *
  * Zero install on work PC — it's just a USB speaker as far as the OS is concerned.
  *
- * USB isochronous transfers arrive at 1ms intervals (~32 bytes each at 16kHz mono 16-bit).
- * We accumulate into 20ms frames (640 bytes) before writing to the shared ring buffer.
- *
  * Platform: Zephyr RTOS
- * Audio: 16kHz, 16-bit PCM, mono
  */
 
 #include <zephyr/kernel.h>
@@ -19,24 +20,34 @@
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/class/usb_audio.h>
 #include <zephyr/logging/log.h>
+#include <string.h>
 
 #include "audio_buffer.h"
 
-LOG_MODULE_REGISTER(usb_audio, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(cervos_usb, LOG_LEVEL_INF);
 
-/* Accumulation buffer for assembling 20ms frames from USB micro-frames.
- * USB delivers ~32 bytes (16 samples) per 1ms isochronous interval.
- * We need 20 intervals to fill one 640-byte frame. */
+/* USB input: 48kHz stereo 16-bit */
+#define USB_SAMPLE_RATE     48000
+#define USB_CHANNELS        2
+#define DOWNSAMPLE_RATIO    3  /* 48kHz → 16kHz */
+
+/* Output: 16kHz mono 16-bit (matches BLE stream) */
+/* AUDIO_FRAME_SAMPLES = 320 (defined in audio_buffer.h) */
+
+/* Accumulation buffer for assembling 20ms output frames.
+ * 20ms at 16kHz mono = 320 samples.
+ * 20ms at 48kHz stereo = 960 stereo pairs = 1920 samples. */
 static int16_t accum_buf[AUDIO_FRAME_SAMPLES];
 static uint32_t accum_pos = 0;
 
-/* LED for audio activity indication */
-static const struct device *audio_led;
+/* Downsample counter — tracks position within the 3:1 ratio */
+static uint32_t ds_counter = 0;
 
 /**
  * USB Audio data received callback.
- * Called by the USB stack when the work PC sends audio data to this "speaker" device.
- * Accumulates USB micro-frames into 20ms PCM frames, then writes to the ring buffer.
+ * Called by the USB stack when the work PC sends audio data.
+ * Input: 48kHz stereo 16-bit PCM.
+ * Processing: stereo→mono mix, 3:1 downsample → 16kHz mono.
  */
 static void usb_audio_data_recv_cb(const struct device *dev,
                                     struct net_buf *buffer,
@@ -47,23 +58,26 @@ static void usb_audio_data_recv_cb(const struct device *dev,
     }
 
     const int16_t *samples = (const int16_t *)buffer->data;
-    size_t num_samples = size / sizeof(int16_t);
+    size_t total_samples = size / sizeof(int16_t);
 
-    /* Accumulate samples into the 20ms frame buffer */
-    while (num_samples > 0) {
-        size_t space = AUDIO_FRAME_SAMPLES - accum_pos;
-        size_t to_copy = (num_samples < space) ? num_samples : space;
+    /* Process stereo pairs: [L, R, L, R, ...] */
+    for (size_t i = 0; i + 1 < total_samples; i += USB_CHANNELS) {
+        /* Mix stereo to mono: average L and R */
+        int32_t left = samples[i];
+        int32_t right = samples[i + 1];
+        int16_t mono = (int16_t)((left + right) / 2);
 
-        memcpy(&accum_buf[accum_pos], samples, to_copy * sizeof(int16_t));
-        accum_pos += to_copy;
-        samples += to_copy;
-        num_samples -= to_copy;
+        /* Downsample 3:1: keep every 3rd sample */
+        if (ds_counter % DOWNSAMPLE_RATIO == 0) {
+            accum_buf[accum_pos++] = mono;
 
-        /* Full 20ms frame assembled — write to ring buffer */
-        if (accum_pos >= AUDIO_FRAME_SAMPLES) {
-            audio_buffer_write(&audio_ring_buffer, accum_buf, AUDIO_FRAME_SAMPLES);
-            accum_pos = 0;
+            /* Full 20ms frame assembled — write to ring buffer */
+            if (accum_pos >= AUDIO_FRAME_SAMPLES) {
+                audio_buffer_write(&audio_ring_buffer, accum_buf, AUDIO_FRAME_SAMPLES);
+                accum_pos = 0;
+            }
         }
+        ds_counter++;
     }
 
     net_buf_unref(buffer);
@@ -85,6 +99,7 @@ int usb_audio_init(void)
 
     /* Reset accumulation state */
     accum_pos = 0;
+    ds_counter = 0;
     memset(accum_buf, 0, sizeof(accum_buf));
 
     /* Get the USB audio device */
@@ -104,6 +119,6 @@ int usb_audio_init(void)
         return ret;
     }
 
-    LOG_INF("USB Audio initialized — appearing as \"cervhole headset\"");
+    LOG_INF("USB Audio initialized — 48kHz stereo → 16kHz mono, appearing as \"cervhole headset\"");
     return 0;
 }

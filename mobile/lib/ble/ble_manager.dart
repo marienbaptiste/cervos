@@ -37,6 +37,11 @@ class BleManager {
     return _ble.requestMtu(deviceId: deviceId, mtu: 247);
   }
 
+  /// Discover services on the connected device.
+  Future<List<DiscoveredService>> discoverServices(String deviceId) {
+    return _ble.discoverServices(deviceId);
+  }
+
   /// Subscribe to audio stream notifications from the dongle.
   /// Each notification contains 640 bytes of raw PCM (320 int16 samples).
   Stream<List<int>> subscribeToAudio(String deviceId) {

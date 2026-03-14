@@ -17,6 +17,9 @@ class DongleConnection {
   StreamSubscription<ConnectionStateUpdate>? _connectionSub;
   StreamSubscription<List<int>>? _audioSub;
   int _mtu = 23;
+  int _rawNotificationCount = 0;
+  int _totalBytesReceived = 0;
+  String _lastError = '';
 
   final _stateController = StreamController<DongleState>.broadcast();
   final _audioController = StreamController<Int16List>.broadcast();
@@ -29,6 +32,15 @@ class DongleConnection {
 
   /// Current negotiated MTU.
   int get mtu => _mtu;
+
+  /// Raw BLE notification count (for debugging).
+  int get rawNotificationCount => _rawNotificationCount;
+
+  /// Total bytes received over BLE (for debugging).
+  int get totalBytesReceived => _totalBytesReceived;
+
+  /// Last BLE error message (for debugging).
+  String get lastError => _lastError;
 
   /// Connected device name.
   String? get deviceName => _deviceName;
@@ -68,19 +80,36 @@ class DongleConnection {
     // Negotiate MTU for large audio frames
     try {
       _mtu = await _bleManager.negotiateMtu(_deviceId!);
-    } catch (_) {
+      _lastError = 'MTU OK: $_mtu';
+    } catch (e) {
       _mtu = 23;
+      _lastError = 'MTU err: $e';
+    }
+
+    // Discover services first — some BLE stacks require this
+    try {
+      await _bleManager.discoverServices(_deviceId!);
+      _lastError = '$_lastError | Svc OK';
+    } catch (e) {
+      _lastError = '$_lastError | Svc err: $e';
     }
 
     _stateController.add(DongleState.connected);
 
     // Subscribe to audio notifications
-    _audioSub = _bleManager.subscribeToAudio(_deviceId!).listen(
-      (data) {
-        _processAudioNotification(data);
-      },
-      onError: (_) {},
-    );
+    try {
+      _audioSub = _bleManager.subscribeToAudio(_deviceId!).listen(
+        (data) {
+          _processAudioNotification(data);
+        },
+        onError: (Object error) {
+          _lastError = 'Sub stream err: $error';
+        },
+      );
+      _lastError = '$_lastError | Sub OK';
+    } catch (e) {
+      _lastError = '$_lastError | Sub err: $e';
+    }
   }
 
   /// Convert raw BLE bytes to Int16List PCM frames.
@@ -88,6 +117,8 @@ class DongleConnection {
   final _accumulator = BytesBuilder(copy: false);
 
   void _processAudioNotification(List<int> data) {
+    _rawNotificationCount++;
+    _totalBytesReceived += data.length;
     _accumulator.add(Uint8List.fromList(data));
 
     // Process complete frames (640 bytes each)

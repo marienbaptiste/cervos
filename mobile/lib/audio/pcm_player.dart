@@ -5,9 +5,6 @@ import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 import '../core/constants.dart';
 
 /// Plays raw PCM audio frames on the phone speaker.
-///
-/// Uses flutter_pcm_sound for direct PCM buffer playback.
-/// Maintains a small buffer (3-4 frames = 60-80ms) to smooth BLE jitter.
 class PcmPlayer {
   bool _initialized = false;
 
@@ -15,16 +12,17 @@ class PcmPlayer {
   Future<void> init() async {
     if (_initialized) return;
 
+    await FlutterPcmSound.setLogLevel(LogLevel.error);
+
     await FlutterPcmSound.setup(
       sampleRate: AudioConstants.sampleRate,
       channelCount: AudioConstants.channels,
-      // Feed threshold — request more data when buffer drops below this
     );
 
-    // Set a reasonable feed threshold (2 frames worth)
-    await FlutterPcmSound.setFeedThreshold(
-        AudioConstants.frameBytes * 2,
-    );
+    // Feed threshold in samples (request more when buffer drops below 2 frames)
+    await FlutterPcmSound.setFeedThreshold(AudioConstants.frameSamples * 2);
+
+    await FlutterPcmSound.play();
 
     _initialized = true;
   }
@@ -33,10 +31,9 @@ class PcmPlayer {
   void enqueue(Int16List pcmFrame) {
     if (!_initialized) return;
 
-    // Convert Int16List to Uint8List (raw bytes) for the plugin
-    final bytes = Uint8List.view(pcmFrame.buffer,
-        pcmFrame.offsetInBytes, pcmFrame.lengthInBytes);
-    FlutterPcmSound.feed(PcmArrayInt16(bytes: bytes));
+    // Use the documented fromList constructor which handles byte conversion
+    final pcmArray = PcmArrayInt16.fromList(pcmFrame.toList());
+    FlutterPcmSound.feed(pcmArray);
   }
 
   /// Stop playback and release resources.

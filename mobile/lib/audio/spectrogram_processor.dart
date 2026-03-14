@@ -37,15 +37,16 @@ class SpectrogramProcessor {
     }
     // Remaining samples are zero (zero-padding from 320 to 512)
 
-    // Compute FFT
-    final fft = FFT(AudioConstants.fftSize);
-    final spectrum = fft.realFft(windowed);
+    // Compute FFT — fft package uses static Transform(List<double>)
+    // returning List<Complex> with .real and .imaginary
+    final input = List<double>.from(windowed);
+    final spectrum = FFT.Transform(input);
 
     // Compute magnitude in dB for each frequency bin
     final magnitudes = Float64List(AudioConstants.frequencyBins);
     for (int i = 0; i < AudioConstants.frequencyBins; i++) {
-      final real = spectrum[i].x;
-      final imag = spectrum[i].y;
+      final real = spectrum[i].real;
+      final imag = spectrum[i].imaginary;
       final mag = sqrt(real * real + imag * imag);
       // Convert to dB, floor at -100 dB
       magnitudes[i] = mag > 0 ? 20 * log(mag) / ln10 : -100.0;

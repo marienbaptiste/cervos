@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,10 +30,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _permissionsGranted = false;
   bool _pipelineInitialized = false;
 
+  // Direct stream subscriptions for reliable frame-by-frame processing
+  StreamSubscription<Int16List>? _audioSub;
+  StreamSubscription<SpectrogramUpdate>? _spectrumSub;
+  StreamSubscription<double>? _levelSub;
+
+  SpectrogramUpdate? _latestSpectrum;
+  double _latestLevel = -100.0;
+  int _frameCount = 0;
+
+  // Periodic UI refresh for debug counters
+  Timer? _refreshTimer;
+
   @override
   void initState() {
     super.initState();
     _requestPermissions();
+    // Refresh debug counters every 500ms
+    _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    _audioSub?.cancel();
+    _spectrumSub?.cancel();
+    _levelSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _requestPermissions() async {
@@ -54,16 +82,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   void _disconnect() {
+    _audioSub?.cancel();
+    _audioSub = null;
+    _spectrumSub?.cancel();
+    _spectrumSub = null;
+    _levelSub?.cancel();
+    _levelSub = null;
+    _latestSpectrum = null;
+    _latestLevel = -100.0;
     final connection = ref.read(dongleConnectionProvider);
     connection.disconnect();
   }
 
-  Future<void> _ensurePipelineInitialized() async {
+  Future<void> _startAudioPipeline() async {
+    if (_audioSub != null) return; // Already listening
+
+    final pipeline = ref.read(audioPipelineProvider);
     if (!_pipelineInitialized) {
-      final pipeline = ref.read(audioPipelineProvider);
       await pipeline.init();
       _pipelineInitialized = true;
     }
+
+    final connection = ref.read(dongleConnectionProvider);
+
+    // Listen to BLE audio frames and feed into pipeline
+    _audioSub = connection.audioStream.listen((Int16List frame) {
+      _frameCount++;
+      pipeline.onPcmFrame(frame);
+    });
+
+    // Listen to pipeline outputs and update UI
+    _spectrumSub = pipeline.spectrumStream.listen((update) {
+      setState(() {
+        _latestSpectrum = update;
+      });
+    });
+
+    _levelSub = pipeline.levelStream.listen((level) {
+      setState(() {
+        _latestLevel = level;
+      });
+    });
   }
 
   @override
@@ -101,11 +160,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       error: (_, __) => DongleState.disconnected,
     );
 
-    // Wire BLE audio into pipeline when connected
+    // Start the audio pipeline when connected
     if (state == DongleState.connected) {
-      _ensurePipelineInitialized();
-      // Activate the audio bridge (BLE → pipeline)
-      ref.watch(audioBridgeProvider);
+      _startAudioPipeline();
     }
 
     return CervosScaffold(
@@ -119,7 +176,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ConnectionCard(
+        const ConnectionCard(
           state: DongleState.disconnected,
         ),
         const SizedBox(height: Spacing.lg),
@@ -145,35 +202,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildAudioView(DongleState state, DongleConnection connection) {
-    final spectrumUpdate = ref.watch(spectrumProvider);
-    final level = ref.watch(audioLevelProvider);
-
-    final spectrum = spectrumUpdate.when(
-      data: (u) => u,
-      loading: () => null,
-      error: (_, __) => null,
-    );
-
-    final dbfs = level.when(
-      data: (l) => l,
-      loading: () => -100.0,
-      error: (_, __) => -100.0,
-    );
-
     return Column(
       children: [
         ConnectionCard(
           state: state,
-          deviceName: connection.deviceName,
+          deviceName: '${connection.deviceName ?? ""}',
           mtu: connection.mtu,
           onDisconnect: _disconnect,
         ),
+        const SizedBox(height: Spacing.sm),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(Spacing.md),
+            child: Text(
+              'BLE: ${connection.rawNotificationCount} notifs, '
+              '${connection.totalBytesReceived} bytes\n'
+              'Pipeline: $_frameCount frames  |  MTU: ${connection.mtu}\n'
+              '${connection.lastError}',
+              style: const TextStyle(
+                color: CervosTheme.textSecondary,
+                fontSize: 12,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
         const SizedBox(height: Spacing.lg),
         Expanded(
-          child: SpectrogramWidget(update: spectrum),
+          child: SpectrogramWidget(update: _latestSpectrum),
         ),
         const SizedBox(height: Spacing.md),
-        LevelMeter(dbfs: dbfs),
+        LevelMeter(dbfs: _latestLevel),
         const SizedBox(height: Spacing.lg),
         SizedBox(
           width: double.infinity,
