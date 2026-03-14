@@ -67,6 +67,8 @@ persistence:
 devices:
   glasses: "Even Realities G2"
   ring: "R1"
+  dongle_usb_name: "cervhole headset"    # USB device name (what work PC sees)
+  dongle_ble_name: "cervhole dongle"     # BLE advertising name (what phone sees)
 
 # Notifications
 notifications:

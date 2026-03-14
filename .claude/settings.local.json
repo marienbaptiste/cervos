@@ -8,7 +8,17 @@
       "WebFetch(domain:medium.com)",
       "WebSearch",
       "WebFetch(domain:webcache.googleusercontent.com)",
-      "WebFetch(domain:12ft.io)"
+      "WebFetch(domain:12ft.io)",
+      "Bash(find /c/CodeProjects/cervos -maxdepth 2 -not -path */.git* -type d)",
+      "Bash(find /c/CodeProjects/cervos -type f \\\\\\(-name *.c -o -name *.h -o -name *.conf -o -name *.overlay -o -name CMakeLists.txt -o -name prj.conf \\\\\\))",
+      "Bash(xargs ls:*)",
+      "Bash(flutter --version)",
+      "Bash(where flutter:*)",
+      "Bash(cmd.exe /c 'where flutter')",
+      "Read(//c/flutter/bin/**)",
+      "Read(//c/CodeProjects/cervos/$LOCALAPPDATA/Pub/**)",
+      "Read(//c/CodeProjects/cervos/$HOME/flutter/bin/**)",
+      "Read(//c//**)"
     ]
   }
 }

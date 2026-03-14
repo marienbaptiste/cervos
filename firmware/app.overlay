@@ -1,0 +1,15 @@
+/*
+ * Devicetree overlay for nRF52840 Dongle
+ * Enables USB and configures status LED for audio activity indication.
+ */
+
+&zephyr_udc0 {
+	status = "okay";
+};
+
+/* Use the green LED on the nRF52840 dongle (LED0 / P0.06) as audio activity indicator */
+/ {
+	aliases {
+		audio-led = &led0;
+	};
+};

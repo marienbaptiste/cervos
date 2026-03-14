@@ -1,0 +1,34 @@
+name: cervos
+description: Cervos ambient AI assistant — BLE audio bridge & spectrogram
+
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # BLE
+  flutter_reactive_ble: ^5.3.1
+
+  # State management
+  flutter_riverpod: ^2.5.1
+
+  # Audio playback — raw PCM buffer output
+  flutter_pcm_sound: ^1.0.0
+
+  # FFT for spectrogram
+  fft: ^2.1.0
+
+  # UI
+  google_fonts: ^6.1.0
+  permission_handler: ^11.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1

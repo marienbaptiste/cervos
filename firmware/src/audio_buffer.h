@@ -1,0 +1,59 @@
+/*
+ * Cervos — Shared Audio Ring Buffer
+ *
+ * Frame-based circular buffer shared between USB Audio Capture (writer)
+ * and BLE Audio Stream (reader). Semaphore-signaled for zero-polling.
+ *
+ * Audio: 16kHz, 16-bit PCM, mono, 20ms frames (320 samples = 640 bytes)
+ */
+
+#ifndef AUDIO_BUFFER_H
+#define AUDIO_BUFFER_H
+
+#include <zephyr/kernel.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#define AUDIO_SAMPLE_RATE       16000
+#define AUDIO_SAMPLE_BITS       16
+#define AUDIO_CHANNELS          1
+#define AUDIO_FRAME_MS          20
+#define AUDIO_FRAME_SAMPLES     (AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS / 1000)  /* 320 */
+#define AUDIO_FRAME_BYTES       (AUDIO_FRAME_SAMPLES * (AUDIO_SAMPLE_BITS / 8))  /* 640 */
+#define AUDIO_BUFFER_FRAMES     8  /* 160ms of buffering */
+
+typedef struct {
+    int16_t frames[AUDIO_BUFFER_FRAMES][AUDIO_FRAME_SAMPLES];
+    volatile uint32_t write_head;
+    volatile uint32_t read_head;
+    struct k_sem frame_ready;
+} audio_ring_buffer_t;
+
+/* Global instance shared between USB capture and BLE stream */
+extern audio_ring_buffer_t audio_ring_buffer;
+
+/**
+ * Initialize the ring buffer and semaphore.
+ */
+void audio_buffer_init(audio_ring_buffer_t *buf);
+
+/**
+ * Write one complete frame (AUDIO_FRAME_SAMPLES samples) into the buffer.
+ * Called from USB audio callback context.
+ * Returns 0 on success, -ENOSPC if buffer is full (oldest frame overwritten).
+ */
+int audio_buffer_write(audio_ring_buffer_t *buf, const int16_t *pcm, size_t samples);
+
+/**
+ * Read one complete frame from the buffer.
+ * Called from main loop after k_sem_take(&buf->frame_ready).
+ * Returns 0 on success, -ENODATA if buffer is empty.
+ */
+int audio_buffer_read(audio_ring_buffer_t *buf, int16_t *pcm_out, size_t samples);
+
+/**
+ * Check if there is at least one frame available to read.
+ */
+bool audio_buffer_has_data(audio_ring_buffer_t *buf);
+
+#endif /* AUDIO_BUFFER_H */

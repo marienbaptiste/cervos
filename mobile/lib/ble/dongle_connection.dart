@@ -1,0 +1,129 @@
+import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
+
+import 'ble_manager.dart';
+
+/// Manages connection lifecycle to the cervhole dongle.
+/// Handles connect → MTU negotiate → subscribe to audio → emit PCM frames.
+class DongleConnection {
+  DongleConnection(this._bleManager);
+
+  final BleManager _bleManager;
+
+  String? _deviceId;
+  String? _deviceName;
+  StreamSubscription<ConnectionStateUpdate>? _connectionSub;
+  StreamSubscription<List<int>>? _audioSub;
+  int _mtu = 23;
+
+  final _stateController = StreamController<DongleState>.broadcast();
+  final _audioController = StreamController<Int16List>.broadcast();
+
+  /// Connection state stream.
+  Stream<DongleState> get stateStream => _stateController.stream;
+
+  /// PCM audio frame stream — each event is 320 int16 samples (20ms at 16kHz).
+  Stream<Int16List> get audioStream => _audioController.stream;
+
+  /// Current negotiated MTU.
+  int get mtu => _mtu;
+
+  /// Connected device name.
+  String? get deviceName => _deviceName;
+
+  /// Connect to the dongle by device ID.
+  void connect(DiscoveredDevice device) {
+    disconnect();
+    _deviceId = device.id;
+    _deviceName = device.name.isNotEmpty ? device.name : device.id;
+
+    _stateController.add(DongleState.connecting);
+
+    _connectionSub = _bleManager.connectToDongle(device.id).listen(
+      (update) async {
+        switch (update.connectionState) {
+          case DeviceConnectionState.connected:
+            await _onConnected();
+          case DeviceConnectionState.disconnected:
+            _stateController.add(DongleState.disconnected);
+            _audioSub?.cancel();
+            _audioSub = null;
+          case DeviceConnectionState.connecting:
+            _stateController.add(DongleState.connecting);
+          case DeviceConnectionState.disconnecting:
+            break;
+        }
+      },
+      onError: (Object error) {
+        _stateController.add(DongleState.disconnected);
+      },
+    );
+  }
+
+  Future<void> _onConnected() async {
+    if (_deviceId == null) return;
+
+    // Negotiate MTU for large audio frames
+    try {
+      _mtu = await _bleManager.negotiateMtu(_deviceId!);
+    } catch (_) {
+      _mtu = 23;
+    }
+
+    _stateController.add(DongleState.connected);
+
+    // Subscribe to audio notifications
+    _audioSub = _bleManager.subscribeToAudio(_deviceId!).listen(
+      (data) {
+        _processAudioNotification(data);
+      },
+      onError: (_) {},
+    );
+  }
+
+  /// Convert raw BLE bytes to Int16List PCM frames.
+  /// Handles potential MTU fragmentation by accumulating bytes.
+  final _accumulator = BytesBuilder(copy: false);
+
+  void _processAudioNotification(List<int> data) {
+    _accumulator.add(Uint8List.fromList(data));
+
+    // Process complete frames (640 bytes each)
+    while (_accumulator.length >= 640) {
+      final bytes = _accumulator.takeBytes();
+      final frameBytes = Uint8List.fromList(bytes.sublist(0, 640));
+      final pcmFrame = Int16List.view(frameBytes.buffer);
+      _audioController.add(pcmFrame);
+
+      // Put back any remaining bytes
+      if (bytes.length > 640) {
+        _accumulator.add(bytes.sublist(640));
+      }
+    }
+  }
+
+  /// Disconnect from the dongle.
+  void disconnect() {
+    _audioSub?.cancel();
+    _audioSub = null;
+    _connectionSub?.cancel();
+    _connectionSub = null;
+    _accumulator.clear();
+    _stateController.add(DongleState.disconnected);
+  }
+
+  /// Clean up resources.
+  void dispose() {
+    disconnect();
+    _stateController.close();
+    _audioController.close();
+  }
+}
+
+enum DongleState {
+  disconnected,
+  connecting,
+  connected,
+}
