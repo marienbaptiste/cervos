@@ -29,10 +29,9 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   bool _permissionsGranted = false;
   bool _pipelineInitialized = false;
-  bool _lowLatency = false;
   bool _spectroEnabled = true;
 
-  StreamSubscription<Int16List>? _audioSub;
+  StreamSubscription<Uint8List>? _audioSub;
   StreamSubscription<SpectrogramUpdate>? _spectrumSub;
   StreamSubscription<double>? _levelSub;
 
@@ -153,8 +152,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     final connection = ref.read(dongleConnectionProvider);
 
-    _audioSub = connection.audioStream.listen((Int16List frame) {
-      pipeline.onPcmFrame(frame);
+    _audioSub = connection.opusStream.listen((Uint8List packet) {
+      pipeline.onOpusPacket(packet);
     });
 
     _spectrumSub = pipeline.spectrumStream.listen((update) {
@@ -293,36 +292,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   color: _spectroEnabled
                       ? CervosTheme.badgeLocal
                       : CervosTheme.level3,
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
-              ),
-            ),
-            const SizedBox(width: Spacing.sm),
-            OutlinedButton.icon(
-              onPressed: () {
-                final pipeline = ref.read(audioPipelineProvider);
-                setState(() {
-                  pipeline.setSmooth(!pipeline.smooth);
-                });
-              },
-              icon: Icon(
-                ref.read(audioPipelineProvider).smooth
-                    ? Icons.shield_rounded
-                    : Icons.bolt_rounded,
-                size: 16,
-              ),
-              label: Text(
-                ref.read(audioPipelineProvider).smooth ? 'SMOOTH' : 'LOW',
-                style: const TextStyle(fontSize: 11),
-              ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: ref.read(audioPipelineProvider).smooth
-                    ? CervosTheme.textSecondary
-                    : CervosTheme.badgeLocal,
-                side: BorderSide(
-                  color: ref.read(audioPipelineProvider).smooth
-                      ? CervosTheme.level3
-                      : CervosTheme.badgeLocal,
                 ),
                 padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
               ),

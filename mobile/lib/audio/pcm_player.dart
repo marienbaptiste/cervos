@@ -9,16 +9,19 @@ class PcmPlayer {
   bool _initialized = false;
 
   Future<void> init() async {
-    if (_initialized) return;
+    if (_initialized) {
+      await FlutterPcmSound.release();
+      _initialized = false;
+    }
 
     await FlutterPcmSound.setLogLevel(LogLevel.none);
 
     await FlutterPcmSound.setup(
       sampleRate: AudioConstants.sampleRate,
-      channelCount: 1,
+      channelCount: AudioConstants.channels,
     );
 
-    await FlutterPcmSound.setFeedThreshold(AudioConstants.frameSamples * 2);
+    await FlutterPcmSound.setFeedThreshold(AudioConstants.frameSamples);
     await FlutterPcmSound.play();
 
     _initialized = true;

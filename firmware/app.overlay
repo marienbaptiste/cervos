@@ -11,6 +11,8 @@
 		feature-mute;
 		channel-l;
 		channel-r;
+		resolution = <16>;
+		sample-rate-hz = <48000>;
 
 		feature-volume;
 		volume-max = <0x0500>;
@@ -22,5 +24,7 @@
 		feature-mute;
 		channel-l;
 		channel-r;
+		resolution = <16>;
+		sample-rate-hz = <48000>;
 	};
 };

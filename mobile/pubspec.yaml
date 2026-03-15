@@ -21,6 +21,10 @@ dependencies:
   # Audio playback — raw PCM buffer output
   flutter_pcm_sound: ^1.0.0
 
+  # Opus decoder for BLE audio
+  opus_dart: ^3.0.0
+  opus_flutter: ^3.0.0
+
   # FFT for spectrogram
   fft: ^0.5.1
 

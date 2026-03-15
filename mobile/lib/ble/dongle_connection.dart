@@ -25,12 +25,16 @@ class DongleConnection {
 
   final _stateController = StreamController<DongleState>.broadcast();
   final _audioController = StreamController<Int16List>.broadcast();
+  final _opusController = StreamController<Uint8List>.broadcast();
 
   /// Connection state stream.
   Stream<DongleState> get stateStream => _stateController.stream;
 
-  /// PCM audio frame stream — each event is 320 int16 samples (20ms at 16kHz).
+  /// PCM audio frame stream (after Opus decode).
   Stream<Int16List> get audioStream => _audioController.stream;
+
+  /// Raw Opus packet stream (each BLE notification = one packet).
+  Stream<Uint8List> get opusStream => _opusController.stream;
 
   /// Current negotiated MTU.
   int get mtu => _mtu;
@@ -110,8 +114,7 @@ class DongleConnection {
       _lastError = '$_lastError | Svc err: $e';
     }
 
-    // Reset accumulator for fresh connection
-    _accumulator.clear();
+    // Reset counters for fresh connection
     _rawNotificationCount = 0;
     _totalBytesReceived = 0;
     _captureEnabled = true;  // Firmware defaults to ON on connect
@@ -134,28 +137,12 @@ class DongleConnection {
     }
   }
 
-  /// Convert raw BLE bytes to Int16List PCM frames.
-  /// Handles potential MTU fragmentation by accumulating bytes.
-  final _accumulator = BytesBuilder(copy: false);
-
   void _processAudioNotification(List<int> data) {
     _rawNotificationCount++;
     _totalBytesReceived += data.length;
-    _accumulator.add(Uint8List.fromList(data));
 
-    // Process complete frames (1920 bytes = 960 samples at 48kHz mono)
-    while (_accumulator.length >= AudioConstants.frameBytes) {
-      final bytes = _accumulator.takeBytes();
-      final frameBytes = Uint8List.fromList(
-          bytes.sublist(0, AudioConstants.frameBytes));
-      final pcmFrame = Int16List.view(frameBytes.buffer);
-      _audioController.add(pcmFrame);
-
-      // Put back any remaining bytes
-      if (bytes.length > AudioConstants.frameBytes) {
-        _accumulator.add(bytes.sublist(AudioConstants.frameBytes));
-      }
-    }
+    // Each BLE notification is one complete Opus packet
+    _opusController.add(Uint8List.fromList(data));
   }
 
   /// Disconnect from the dongle.
@@ -164,7 +151,6 @@ class DongleConnection {
     _audioSub = null;
     _connectionSub?.cancel();
     _connectionSub = null;
-    _accumulator.clear();
     _stateController.add(DongleState.disconnected);
   }
 
@@ -173,6 +159,7 @@ class DongleConnection {
     disconnect();
     _stateController.close();
     _audioController.close();
+    _opusController.close();
   }
 }
 

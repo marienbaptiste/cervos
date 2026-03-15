@@ -1,7 +1,8 @@
 /*
  * Cervos — Shared Audio Ring Buffer
  *
- * Audio: 24kHz, 16-bit PCM, mono, 10ms frames (240 samples = 480 bytes)
+ * Audio: 48kHz, 16-bit PCM, stereo interleaved, 20ms frames
+ * 960 samples/channel × 2 channels = 1920 samples = 3840 bytes per frame
  */
 
 #ifndef AUDIO_BUFFER_H
@@ -14,10 +15,10 @@
 #define AUDIO_SAMPLE_RATE       24000
 #define AUDIO_SAMPLE_BITS       16
 #define AUDIO_CHANNELS          1
-#define AUDIO_FRAME_MS          10
-#define AUDIO_FRAME_SAMPLES     (AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS / 1000)  /* 480 */
-#define AUDIO_FRAME_BYTES       (AUDIO_FRAME_SAMPLES * (AUDIO_SAMPLE_BITS / 8))  /* 960 */
-#define AUDIO_BUFFER_FRAMES     8
+#define AUDIO_FRAME_MS          20
+#define AUDIO_FRAME_SAMPLES     (AUDIO_SAMPLE_RATE * AUDIO_FRAME_MS / 1000 * AUDIO_CHANNELS)  /* 960 */
+#define AUDIO_FRAME_BYTES       (AUDIO_FRAME_SAMPLES * (AUDIO_SAMPLE_BITS / 8))  /* 1920 */
+#define AUDIO_BUFFER_FRAMES     4
 
 typedef struct {
     int16_t frames[AUDIO_BUFFER_FRAMES][AUDIO_FRAME_SAMPLES];

@@ -26,6 +26,11 @@ public final class GeneratedPluginRegistrant {
       Log.e(TAG, "Error registering plugin flutter_pcm_sound, com.lib.flutter_pcm_sound.FlutterPcmSoundPlugin", e);
     }
     try {
+      flutterEngine.getPlugins().add(new eu.epnw.opus_flutter_android.OpusFlutterAndroidPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin opus_flutter_android, eu.epnw.opus_flutter_android.OpusFlutterAndroidPlugin", e);
+    }
+    try {
       flutterEngine.getPlugins().add(new io.flutter.plugins.pathprovider.PathProviderPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin path_provider_android, io.flutter.plugins.pathprovider.PathProviderPlugin", e);

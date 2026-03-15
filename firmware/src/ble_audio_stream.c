@@ -98,9 +98,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
     current_conn = bt_conn_ref(conn);
     LOG_INF("BLE connected");
 
-    /* Enable USB audio — PC will see "cervhole headset" */
     capture_enabled = 1;
-    usb_enable(NULL);
 
     /* Flush stale audio from ring buffer */
     audio_buffer_flush(&audio_ring_buffer);
@@ -129,10 +127,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
         current_conn = NULL;
     }
     notify_enabled = false;
-
-    /* Disable USB — release PC audio back to default */
     capture_enabled = 0;
-    usb_disable();
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -142,33 +137,21 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 
 int ble_audio_send_frame(const int16_t *pcm_data, size_t samples)
 {
+    (void)pcm_data;
+    (void)samples;
+    return -ENOTSUP;  /* Unused — replaced by ble_audio_send_opus */
+}
+
+int ble_audio_send_opus(const uint8_t *data, size_t len)
+{
     if (!current_conn || !capture_enabled) {
         return -ENOTCONN;
     }
 
-    const uint8_t *data = (const uint8_t *)pcm_data;
-    size_t total_len = samples * sizeof(int16_t);
-    const size_t chunk_size = 240;
-    size_t offset = 0;
-    int ret = 0;
-
-    while (offset < total_len) {
-        size_t len = total_len - offset;
-        if (len > chunk_size) {
-            len = chunk_size;
-        }
-
-        ret = bt_gatt_notify(current_conn,
-                             &cervos_audio_svc.attrs[2],
-                             &data[offset],
-                             len);
-        if (ret != 0) {
-            break;
-        }
-        offset += len;
-    }
-
-    return ret;
+    /* Opus packets are typically 40-300 bytes — fits in one BLE notification */
+    return bt_gatt_notify(current_conn,
+                          &cervos_audio_svc.attrs[2],
+                          data, len);
 }
 
 static const struct bt_data ad[] = {

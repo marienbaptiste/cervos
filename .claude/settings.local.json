@@ -127,7 +127,23 @@
       "Bash(ZEPHYR_BASE=\"/c/dev/zephyr-workspace/zephyr\" GNUARMEMB_TOOLCHAIN_PATH=\"/c/dev/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi\" ZEPHYR_TOOLCHAIN_VARIANT=\"gnuarmemb\" PATH=\"/c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts:/c/dev/cmake-3.31.4-windows-x86_64/bin:/c/dev/ninja:/c/dev/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi/bin:$PATH\" west build -b nrf52840dongle/nrf52840 zephyr/samples/subsys/usb/audio/headphones_microphone)",
       "Bash(ls /c/dev/zephyr-workspace/build/cervhole_dfu_v*.zip)",
       "Bash(flutter clean:*)",
-      "Bash(echo \"EXIT: $?\")"
+      "Bash(echo \"EXIT: $?\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(ZEPHYR_BASE=\"/c/dev/zephyr-workspace/zephyr\" GNUARMEMB_TOOLCHAIN_PATH=\"/c/dev/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi\" ZEPHYR_TOOLCHAIN_VARIANT=\"gnuarmemb\" PATH=\"/c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts:/c/dev/cmake-3.31.4-windows-x86_64/bin:/c/dev/ninja:/c/dev/arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-eabi/bin:$PATH\" west build)",
+      "Bash(findstr /i error:)",
+      "Bash(adb kill-server:*)",
+      "Bash(adb start-server:*)",
+      "Read(//c/Users/marie/AppData/Local/Temp/claude/c--CodeProjects-cervos/f5d4f010-dfe1-48ab-9ca5-214449e297b1/tasks/**)",
+      "Bash(powershell.exe -Command \"& { $port = New-Object System.IO.Ports.SerialPort\\(''COM6'', 115200\\); $port.ReadTimeout = 3000; $port.Open\\(\\); try { for\\($i=0;$i -lt 20;$i++\\) { Write-Host $port.ReadLine\\(\\) } } catch { Write-Host ''timeout'' } finally { $port.Close\\(\\) } }\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/ubicore/nrf52_audio_opus_sgtl5000/master/src/audio/config.h\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/ubicore/nrf52_audio_opus_sgtl5000/master/prj.conf\")",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/ubicore/nrf52_audio_opus_sgtl5000/master/src/audio/codec_opus.c\")",
+      "Bash(curl -sL https://api.github.com/repos/ubicore/nrf52_audio_opus_sgtl5000/git/trees/master?recursive=1)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/ubicore/nrf52_audio_opus_sgtl5000/master/src/audio/audio_codec_opus.c\")",
+      "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/celt_pitch_xcorr_arm*.s)",
+      "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/*.S)"
     ]
   }
 }

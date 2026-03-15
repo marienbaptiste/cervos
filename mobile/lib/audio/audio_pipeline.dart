@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:typed_data';
 
+import 'opus_decoder.dart';
 import 'spectrogram_processor.dart';
 import 'pcm_player.dart';
 
@@ -15,28 +15,14 @@ import 'pcm_player.dart';
 class AudioPipeline {
   AudioPipeline()
       : _spectrogram = SpectrogramProcessor(),
-        _player = PcmPlayer();
+        _player = PcmPlayer(),
+        _opusDecoder = OpusAudioDecoder();
 
   final SpectrogramProcessor _spectrogram;
   final PcmPlayer _player;
+  final OpusAudioDecoder _opusDecoder;
 
   bool spectroEnabled = true;
-
-  static const int _jitterFrames = 2;
-  final Queue<Int16List> _jitterBuffer = Queue<Int16List>();
-  bool _primed = false;
-  bool _smooth = false;
-
-  bool get smooth => _smooth;
-
-  void setSmooth(bool value) {
-    _smooth = value;
-    if (!value && _jitterBuffer.isNotEmpty) {
-      while (_jitterBuffer.isNotEmpty) {
-        _player.enqueue(_jitterBuffer.removeFirst());
-      }
-    }
-  }
 
   final _spectrumController = StreamController<SpectrogramUpdate>.broadcast();
   final _levelController = StreamController<double>.broadcast();
@@ -46,18 +32,28 @@ class AudioPipeline {
   SpectrogramProcessor get spectrogram => _spectrogram;
 
   Future<void> init() async {
+    await _opusDecoder.init();
     await _player.init();
   }
 
   /// Flush all buffers (call on reconnect).
   Future<void> flush() async {
-    _jitterBuffer.clear();
-    _primed = false;
     await _player.flush();
   }
 
-  /// Process one PCM frame from BLE.
+  /// Process one Opus packet from BLE.
+  void onOpusPacket(Uint8List opusPacket) {
+    final pcmFrame = _opusDecoder.decode(opusPacket);
+    if (pcmFrame == null) return;
+    _processDecodedFrame(pcmFrame);
+  }
+
+  /// Process one raw PCM frame (fallback for non-Opus mode).
   void onPcmFrame(Int16List pcmFrame) {
+    _processDecodedFrame(pcmFrame);
+  }
+
+  void _processDecodedFrame(Int16List pcmFrame) {
     // 1. Spectrogram + level (skip if disabled to save CPU)
     if (spectroEnabled) {
       final spectrum = _spectrogram.process(pcmFrame);
@@ -71,21 +67,7 @@ class AudioPipeline {
     }
 
     // 2. Play on speaker
-    if (!_smooth) {
-      _player.enqueue(pcmFrame);
-      return;
-    }
-    _jitterBuffer.addLast(pcmFrame);
-    if (!_primed) {
-      if (_jitterBuffer.length >= _jitterFrames) {
-        _primed = true;
-      } else {
-        return;
-      }
-    }
-    if (_jitterBuffer.isNotEmpty) {
-      _player.enqueue(_jitterBuffer.removeFirst());
-    }
+    _player.enqueue(pcmFrame);
   }
 
   /// Clean up resources.
