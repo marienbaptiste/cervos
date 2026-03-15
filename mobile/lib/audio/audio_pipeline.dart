@@ -34,6 +34,11 @@ class AudioPipeline {
     await _player.init();
   }
 
+  /// Flush all buffers (call on reconnect).
+  Future<void> flush() async {
+    await _player.flush();
+  }
+
   /// Process one PCM frame from BLE.
   void onPcmFrame(Int16List pcmFrame) {
     // 1. Compute FFT spectrum

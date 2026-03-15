@@ -1,7 +1,6 @@
 /*
  * Devicetree overlay for nRF52840 Dongle — "cervhole headset"
- * USB Audio Class with headphones + microphone (Windows needs both).
- * Matches the working Zephyr USB audio sample configuration.
+ * USB Audio Class with headphones + microphone (Windows requires both).
  */
 
 &zephyr_udc0 {

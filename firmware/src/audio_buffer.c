@@ -62,3 +62,12 @@ bool audio_buffer_has_data(audio_ring_buffer_t *buf)
 {
     return buf->read_head < buf->write_head;
 }
+
+void audio_buffer_flush(audio_ring_buffer_t *buf)
+{
+    buf->read_head = buf->write_head;
+    /* Drain semaphore without reinitializing it */
+    while (k_sem_take(&buf->frame_ready, K_NO_WAIT) == 0) {
+        /* discard */
+    }
+}

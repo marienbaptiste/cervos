@@ -18,7 +18,6 @@ import 'widgets/dongle_scanner.dart';
 import 'widgets/level_meter.dart';
 import 'widgets/spectrogram_widget.dart';
 
-/// Main screen: shows scanner when disconnected, audio view when connected.
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -30,31 +29,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _permissionsGranted = false;
   bool _pipelineInitialized = false;
 
-  // Direct stream subscriptions for reliable frame-by-frame processing
   StreamSubscription<Int16List>? _audioSub;
   StreamSubscription<SpectrogramUpdate>? _spectrumSub;
   StreamSubscription<double>? _levelSub;
 
   SpectrogramUpdate? _latestSpectrum;
   double _latestLevel = -100.0;
-  int _frameCount = 0;
-
-  // Periodic UI refresh for debug counters
-  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _requestPermissions();
-    // Refresh debug counters every 500ms
-    _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (mounted) setState(() {});
-    });
   }
 
   @override
   void dispose() {
-    _refreshTimer?.cancel();
     _audioSub?.cancel();
     _spectrumSub?.cancel();
     _levelSub?.cancel();
@@ -95,23 +84,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _startAudioPipeline() async {
-    if (_audioSub != null) return; // Already listening
+    if (_audioSub != null) return;
 
     final pipeline = ref.read(audioPipelineProvider);
     if (!_pipelineInitialized) {
       await pipeline.init();
       _pipelineInitialized = true;
+    } else {
+      await pipeline.flush();
     }
 
     final connection = ref.read(dongleConnectionProvider);
 
-    // Listen to BLE audio frames and feed into pipeline
     _audioSub = connection.audioStream.listen((Int16List frame) {
-      _frameCount++;
       pipeline.onPcmFrame(frame);
     });
 
-    // Listen to pipeline outputs and update UI
     _spectrumSub = pipeline.spectrumStream.listen((update) {
       setState(() {
         _latestSpectrum = update;
@@ -133,7 +121,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.bluetooth_disabled,
+              const Icon(Icons.bluetooth_disabled_rounded,
                   size: 48, color: CervosTheme.textDisabled),
               const SizedBox(height: Spacing.lg),
               const Text(
@@ -160,7 +148,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       error: (_, __) => DongleState.disconnected,
     );
 
-    // Start the audio pipeline when connected
     if (state == DongleState.connected) {
       _startAudioPipeline();
     }
@@ -176,9 +163,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const ConnectionCard(
-          state: DongleState.disconnected,
-        ),
+        const ConnectionCard(state: DongleState.disconnected),
         const SizedBox(height: Spacing.lg),
         const Padding(
           padding: EdgeInsets.only(left: Spacing.xs),
@@ -193,9 +178,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         const SizedBox(height: Spacing.sm),
         Expanded(
-          child: DongleScanner(
-            onDeviceSelected: _connectToDevice,
-          ),
+          child: DongleScanner(onDeviceSelected: _connectToDevice),
         ),
       ],
     );
@@ -206,26 +189,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       children: [
         ConnectionCard(
           state: state,
-          deviceName: '${connection.deviceName ?? ""}',
+          deviceName: connection.deviceName,
           mtu: connection.mtu,
           onDisconnect: _disconnect,
-        ),
-        const SizedBox(height: Spacing.sm),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(Spacing.md),
-            child: Text(
-              'BLE: ${connection.rawNotificationCount} notifs, '
-              '${connection.totalBytesReceived} bytes\n'
-              'Pipeline: $_frameCount frames  |  MTU: ${connection.mtu}\n'
-              '${connection.lastError}',
-              style: const TextStyle(
-                color: CervosTheme.textSecondary,
-                fontSize: 12,
-                fontFamily: 'monospace',
-              ),
-            ),
-          ),
         ),
         const SizedBox(height: Spacing.lg),
         Expanded(
@@ -234,16 +200,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         const SizedBox(height: Spacing.md),
         LevelMeter(dbfs: _latestLevel),
         const SizedBox(height: Spacing.lg),
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton(
-            onPressed: _disconnect,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: CervosTheme.level2,
-              padding: const EdgeInsets.symmetric(vertical: Spacing.md),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  final newState = !connection.captureEnabled;
+                  await connection.setCaptureEnabled(newState);
+                  setState(() {});
+                },
+                icon: Icon(
+                  connection.captureEnabled
+                      ? Icons.graphic_eq_rounded
+                      : Icons.volume_off_rounded,
+                  size: 20,
+                ),
+                label: Text(
+                    connection.captureEnabled ? 'Capture ON' : 'Capture OFF'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: connection.captureEnabled
+                      ? CervosTheme.badgeOnDevice
+                      : CervosTheme.level2,
+                  foregroundColor: connection.captureEnabled
+                      ? Colors.white
+                      : CervosTheme.textSecondary,
+                  padding: const EdgeInsets.symmetric(vertical: Spacing.md),
+                ),
+              ),
             ),
-            child: const Text('Disconnect'),
-          ),
+            const SizedBox(width: Spacing.md),
+            ElevatedButton(
+              onPressed: _disconnect,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: CervosTheme.level2,
+                padding: const EdgeInsets.symmetric(
+                    vertical: Spacing.md, horizontal: Spacing.xl),
+              ),
+              child: const Icon(Icons.link_off_rounded, size: 20),
+            ),
+          ],
         ),
       ],
     );

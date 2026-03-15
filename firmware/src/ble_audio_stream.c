@@ -1,16 +1,9 @@
 /*
  * Cervos — nRF52840 BLE Audio Stream
  *
- * BLE side: streams captured meeting audio to the phone via a custom
- * BLE GATT audio service. 20ms PCM frames at 16kHz.
- *
- * The phone receives this stream and does two things:
- * 1. Plays it through BLE earbuds (you hear the meeting)
- * 2. Forwards raw PCM to Mac Studio via Tailscale (for STT + diarization)
- *
- * Runs simultaneously with USB Audio Capture on the same nRF52840.
- *
- * Platform: Zephyr RTOS
+ * BLE GATT service with:
+ * - Audio stream characteristic (notify) — 24kHz mono PCM frames
+ * - Capture control characteristic (write) — 0x00=off, 0x01=on
  */
 
 #include <zephyr/kernel.h>
@@ -18,40 +11,70 @@
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
+#include <zephyr/usb/usb_device.h>
 #include <zephyr/logging/log.h>
 
 #include "audio_buffer.h"
 
 LOG_MODULE_REGISTER(ble_audio, LOG_LEVEL_INF);
 
-/* Custom BLE Audio Service UUID: CE570500-0001-4000-8000-00805F9B34FB */
 #define BT_UUID_CERVOS_AUDIO_VAL \
     BT_UUID_128_ENCODE(0xCE570500, 0x0001, 0x4000, 0x8000, 0x00805F9B34FB)
 #define BT_UUID_CERVOS_AUDIO BT_UUID_DECLARE_128(BT_UUID_CERVOS_AUDIO_VAL)
 
-/* Audio Stream Characteristic UUID: CE570500-0002-4000-8000-00805F9B34FB */
 #define BT_UUID_AUDIO_STREAM_VAL \
     BT_UUID_128_ENCODE(0xCE570500, 0x0002, 0x4000, 0x8000, 0x00805F9B34FB)
 #define BT_UUID_AUDIO_STREAM BT_UUID_DECLARE_128(BT_UUID_AUDIO_STREAM_VAL)
 
+#define BT_UUID_CAPTURE_CTRL_VAL \
+    BT_UUID_128_ENCODE(0xCE570500, 0x0003, 0x4000, 0x8000, 0x00805F9B34FB)
+#define BT_UUID_CAPTURE_CTRL BT_UUID_DECLARE_128(BT_UUID_CAPTURE_CTRL_VAL)
+
 static struct bt_conn *current_conn;
 static bool notify_enabled;
+static uint8_t capture_enabled = 1;
 
-/* Track in-flight notifications to avoid overrunning TX queue */
-static volatile int notifications_in_flight;
-#define MAX_NOTIFICATIONS_IN_FLIGHT 4
-
-/**
- * CCC (Client Characteristic Configuration) changed callback.
- * Called when the phone subscribes/unsubscribes to audio notifications.
- */
 static void ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     notify_enabled = (value == BT_GATT_CCC_NOTIFY);
     LOG_INF("Audio notifications %s", notify_enabled ? "enabled" : "disabled");
 }
 
-/* GATT service definition */
+static ssize_t read_capture_ctrl(struct bt_conn *conn,
+                                  const struct bt_gatt_attr *attr,
+                                  void *buf, uint16_t len, uint16_t offset)
+{
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             &capture_enabled, sizeof(capture_enabled));
+}
+
+static ssize_t write_capture_ctrl(struct bt_conn *conn,
+                                   const struct bt_gatt_attr *attr,
+                                   const void *buf, uint16_t len,
+                                   uint16_t offset, uint8_t flags)
+{
+    if (len != 1) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    uint8_t val = *((const uint8_t *)buf);
+    if (val > 1) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    capture_enabled = val;
+
+    if (capture_enabled) {
+        usb_enable(NULL);
+        LOG_INF("Capture ON — USB audio enabled");
+    } else {
+        usb_disable();
+        LOG_INF("Capture OFF — USB audio released");
+    }
+
+    return len;
+}
+
 BT_GATT_SERVICE_DEFINE(cervos_audio_svc,
     BT_GATT_PRIMARY_SERVICE(BT_UUID_CERVOS_AUDIO),
     BT_GATT_CHARACTERISTIC(BT_UUID_AUDIO_STREAM,
@@ -60,43 +83,48 @@ BT_GATT_SERVICE_DEFINE(cervos_audio_svc,
         NULL, NULL, NULL),
     BT_GATT_CCC(ccc_cfg_changed,
         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CHARACTERISTIC(BT_UUID_CAPTURE_CTRL,
+        BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+        BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+        read_capture_ctrl, write_capture_ctrl, &capture_enabled),
 );
 
-/**
- * BLE connected callback.
- */
 static void connected(struct bt_conn *conn, uint8_t err)
 {
     if (err) {
         LOG_ERR("BLE connection failed (err %u)", err);
         return;
     }
-
     current_conn = bt_conn_ref(conn);
-    notifications_in_flight = 0;
     LOG_INF("BLE connected");
 
-    /* Request Data Length Extension for larger packets */
+    /* Flush stale audio from ring buffer */
+    audio_buffer_flush(&audio_ring_buffer);
+
     struct bt_conn_le_data_len_param dl_param = {
         .tx_max_len = 251,
         .tx_max_time = 2120,
     };
     bt_conn_le_data_len_update(conn, &dl_param);
+
+    /* Request fastest connection interval: 7.5ms */
+    struct bt_le_conn_param conn_param = {
+        .interval_min = 6,   /* 6 × 1.25ms = 7.5ms */
+        .interval_max = 6,
+        .latency = 0,
+        .timeout = 400,      /* 4 seconds */
+    };
+    bt_conn_le_param_update(conn, &conn_param);
 }
 
-/**
- * BLE disconnected callback.
- */
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     LOG_INF("BLE disconnected (reason %u)", reason);
-
     if (current_conn) {
         bt_conn_unref(current_conn);
         current_conn = NULL;
     }
     notify_enabled = false;
-    notifications_in_flight = 0;
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
@@ -104,37 +132,14 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .disconnected = disconnected,
 };
 
-/**
- * Notification sent callback — track in-flight count for backpressure.
- */
-static void notify_sent_cb(struct bt_conn *conn, void *user_data)
-{
-    ARG_UNUSED(user_data);
-
-    if (notifications_in_flight > 0) {
-        notifications_in_flight--;
-    }
-}
-
-/**
- * Stream one audio frame from the USB capture buffer to the phone over BLE.
- * Called from the main loop at 20ms intervals.
- *
- * Sends 640 bytes as a single GATT notification. The BLE controller
- * handles L2CAP fragmentation transparently with DLE enabled.
- */
 int ble_audio_send_frame(const int16_t *pcm_data, size_t samples)
 {
-    if (!current_conn) {
+    if (!current_conn || !capture_enabled) {
         return -ENOTCONN;
     }
 
     const uint8_t *data = (const uint8_t *)pcm_data;
     size_t total_len = samples * sizeof(int16_t);
-
-    /* Split into chunks that fit within ATT MTU.
-     * ATT header = 3 bytes, so max payload = MTU - 3 = 244 bytes.
-     * Use 240 bytes per chunk for safety. */
     const size_t chunk_size = 240;
     size_t offset = 0;
     int ret = 0;
@@ -158,21 +163,16 @@ int ble_audio_send_frame(const int16_t *pcm_data, size_t samples)
     return ret;
 }
 
-/* Advertising data */
 static const struct bt_data ad[] = {
     BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
     BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_CERVOS_AUDIO_VAL),
 };
 
-/* Scan response — includes device name */
 static const struct bt_data sd[] = {
     BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
             sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
-/**
- * Initialize BLE and start advertising as "cervhole dongle".
- */
 int ble_audio_init(void)
 {
     int ret;
@@ -183,9 +183,6 @@ int ble_audio_init(void)
         return ret;
     }
 
-    LOG_INF("Bluetooth initialized");
-
-    /* Start advertising with service UUID so Flutter app can filter by it */
     ret = bt_le_adv_start(BT_LE_ADV_CONN, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
     if (ret) {
         LOG_ERR("Advertising start failed: %d", ret);

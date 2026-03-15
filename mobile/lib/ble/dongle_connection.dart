@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 
+import '../core/constants.dart';
 import 'ble_manager.dart';
 
 /// Manages connection lifecycle to the cervhole dongle.
@@ -20,6 +21,7 @@ class DongleConnection {
   int _rawNotificationCount = 0;
   int _totalBytesReceived = 0;
   String _lastError = '';
+  bool _captureEnabled = true;
 
   final _stateController = StreamController<DongleState>.broadcast();
   final _audioController = StreamController<Int16List>.broadcast();
@@ -41,6 +43,20 @@ class DongleConnection {
 
   /// Last BLE error message (for debugging).
   String get lastError => _lastError;
+
+  /// Whether USB capture is enabled on the dongle.
+  bool get captureEnabled => _captureEnabled;
+
+  /// Toggle USB capture on/off. When off, Windows switches to default audio.
+  Future<void> setCaptureEnabled(bool enabled) async {
+    if (_deviceId == null) return;
+    try {
+      await _bleManager.writeCaptureControl(_deviceId!, enabled);
+      _captureEnabled = enabled;
+    } catch (e) {
+      _lastError = 'Capture toggle err: $e';
+    }
+  }
 
   /// Connected device name.
   String? get deviceName => _deviceName;
@@ -94,6 +110,11 @@ class DongleConnection {
       _lastError = '$_lastError | Svc err: $e';
     }
 
+    // Reset accumulator for fresh connection
+    _accumulator.clear();
+    _rawNotificationCount = 0;
+    _totalBytesReceived = 0;
+
     _stateController.add(DongleState.connected);
 
     // Subscribe to audio notifications
@@ -121,16 +142,17 @@ class DongleConnection {
     _totalBytesReceived += data.length;
     _accumulator.add(Uint8List.fromList(data));
 
-    // Process complete frames (640 bytes each)
-    while (_accumulator.length >= 640) {
+    // Process complete frames (1920 bytes = 960 samples at 48kHz mono)
+    while (_accumulator.length >= AudioConstants.frameBytes) {
       final bytes = _accumulator.takeBytes();
-      final frameBytes = Uint8List.fromList(bytes.sublist(0, 640));
+      final frameBytes = Uint8List.fromList(
+          bytes.sublist(0, AudioConstants.frameBytes));
       final pcmFrame = Int16List.view(frameBytes.buffer);
       _audioController.add(pcmFrame);
 
       // Put back any remaining bytes
-      if (bytes.length > 640) {
-        _accumulator.add(bytes.sublist(640));
+      if (bytes.length > AudioConstants.frameBytes) {
+        _accumulator.add(bytes.sublist(AudioConstants.frameBytes));
       }
     }
   }

@@ -42,6 +42,19 @@ class BleManager {
     return _ble.discoverServices(deviceId);
   }
 
+  /// Write capture control: 0x01 = on, 0x00 = off.
+  Future<void> writeCaptureControl(String deviceId, bool enabled) async {
+    final characteristic = QualifiedCharacteristic(
+      serviceId: BleUuids.audioService,
+      characteristicId: BleUuids.captureControl,
+      deviceId: deviceId,
+    );
+    await _ble.writeCharacteristicWithResponse(
+      characteristic,
+      value: [enabled ? 0x01 : 0x00],
+    );
+  }
+
   /// Subscribe to audio stream notifications from the dongle.
   /// Each notification contains 640 bytes of raw PCM (320 int16 samples).
   Stream<List<int>> subscribeToAudio(String deviceId) {
