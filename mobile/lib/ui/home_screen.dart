@@ -26,7 +26,7 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   bool _permissionsGranted = false;
   bool _pipelineInitialized = false;
   bool _lowLatency = false;
@@ -39,14 +39,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   SpectrogramUpdate? _latestSpectrum;
   double _latestLevel = -100.0;
 
+  bool _spectroWasEnabled = true;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _requestPermissions();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final pipeline = ref.read(audioPipelineProvider);
+    if (state == AppLifecycleState.inactive) {
+      // Pre-disable viz on inactive (before paused) to free CPU early
+      _spectroWasEnabled = pipeline.spectroEnabled;
+      pipeline.spectroEnabled = false;
+    } else if (state == AppLifecycleState.resumed) {
+      pipeline.spectroEnabled = _spectroWasEnabled;
+      if (_spectroWasEnabled) {
+        setState(() {});
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _audioSub?.cancel();
     _spectrumSub?.cancel();
     _levelSub?.cancel();

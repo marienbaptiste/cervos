@@ -114,6 +114,7 @@ class DongleConnection {
     _accumulator.clear();
     _rawNotificationCount = 0;
     _totalBytesReceived = 0;
+    _captureEnabled = true;  // Firmware defaults to ON on connect
 
     _stateController.add(DongleState.connected);
 
