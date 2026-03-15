@@ -37,7 +37,7 @@ int opus_enc_init(void)
     opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(1));  /* 1 = fastest encoding for embedded */
     opus_encoder_ctl(encoder, OPUS_SET_VBR(0));         /* CBR = predictable timing */
     opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC));
-    opus_encoder_ctl(encoder, OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
+    opus_encoder_ctl(encoder, OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_20_MS));
 
     LOG_INF("Opus encoder ready — %dHz %dch %dkbps %dms frames",
             OPUS_SAMPLE_RATE, OPUS_CHANNELS, OPUS_BITRATE / 1000, OPUS_FRAME_MS);
