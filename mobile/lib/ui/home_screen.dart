@@ -28,6 +28,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _permissionsGranted = false;
   bool _pipelineInitialized = false;
+  bool _lowLatency = false;
+  bool _spectroEnabled = true;
 
   StreamSubscription<Int16List>? _audioSub;
   StreamSubscription<SpectrogramUpdate>? _spectrumSub;
@@ -101,15 +103,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
 
     _spectrumSub = pipeline.spectrumStream.listen((update) {
-      setState(() {
-        _latestSpectrum = update;
-      });
+      if (_spectroEnabled) {
+        setState(() {
+          _latestSpectrum = update;
+        });
+      }
     });
 
     _levelSub = pipeline.levelStream.listen((level) {
-      setState(() {
-        _latestLevel = level;
-      });
+      if (_spectroEnabled) {
+        setState(() {
+          _latestLevel = level;
+        });
+      }
     });
   }
 
@@ -195,10 +201,79 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         const SizedBox(height: Spacing.lg),
         Expanded(
-          child: SpectrogramWidget(update: _latestSpectrum),
+          child: _spectroEnabled
+              ? SpectrogramWidget(update: _latestSpectrum)
+              : Center(
+                  child: Text(
+                    'Spectrogram OFF — audio only',
+                    style: TextStyle(color: CervosTheme.textDisabled, fontSize: 14),
+                  ),
+                ),
         ),
-        const SizedBox(height: Spacing.md),
-        LevelMeter(dbfs: _latestLevel),
+        if (_spectroEnabled) ...[
+          const SizedBox(height: Spacing.md),
+          LevelMeter(dbfs: _latestLevel),
+        ],
+        const SizedBox(height: Spacing.sm),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            OutlinedButton.icon(
+              onPressed: () {
+                setState(() {
+                  _spectroEnabled = !_spectroEnabled;
+                  ref.read(audioPipelineProvider).spectroEnabled = _spectroEnabled;
+                });
+              },
+              icon: Icon(
+                _spectroEnabled ? Icons.equalizer_rounded : Icons.equalizer_rounded,
+                size: 16,
+              ),
+              label: Text(_spectroEnabled ? 'VIZ' : 'OFF', style: const TextStyle(fontSize: 11)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: _spectroEnabled
+                    ? CervosTheme.badgeLocal
+                    : CervosTheme.textDisabled,
+                side: BorderSide(
+                  color: _spectroEnabled
+                      ? CervosTheme.badgeLocal
+                      : CervosTheme.level3,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
+              ),
+            ),
+            const SizedBox(width: Spacing.sm),
+            OutlinedButton.icon(
+              onPressed: () {
+                final pipeline = ref.read(audioPipelineProvider);
+                setState(() {
+                  pipeline.setSmooth(!pipeline.smooth);
+                });
+              },
+              icon: Icon(
+                ref.read(audioPipelineProvider).smooth
+                    ? Icons.shield_rounded
+                    : Icons.bolt_rounded,
+                size: 16,
+              ),
+              label: Text(
+                ref.read(audioPipelineProvider).smooth ? 'SMOOTH' : 'LOW',
+                style: const TextStyle(fontSize: 11),
+              ),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: ref.read(audioPipelineProvider).smooth
+                    ? CervosTheme.textSecondary
+                    : CervosTheme.badgeLocal,
+                side: BorderSide(
+                  color: ref.read(audioPipelineProvider).smooth
+                      ? CervosTheme.level3
+                      : CervosTheme.badgeLocal,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: Spacing.lg),
         Row(
           children: [
@@ -228,7 +303,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
               ),
             ),
-            const SizedBox(width: Spacing.md),
+            const SizedBox(width: Spacing.sm),
             ElevatedButton(
               onPressed: _disconnect,
               style: ElevatedButton.styleFrom(

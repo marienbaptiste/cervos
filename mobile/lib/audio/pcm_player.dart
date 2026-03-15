@@ -15,7 +15,7 @@ class PcmPlayer {
 
     await FlutterPcmSound.setup(
       sampleRate: AudioConstants.sampleRate,
-      channelCount: AudioConstants.channels,
+      channelCount: 1,
     );
 
     await FlutterPcmSound.setFeedThreshold(AudioConstants.frameSamples * 2);

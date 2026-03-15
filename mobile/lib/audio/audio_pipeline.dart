@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:typed_data';
 
 import 'spectrogram_processor.dart';
@@ -9,6 +10,8 @@ import 'pcm_player.dart';
 /// 1. Spectrogram processor (FFT → frequency bins)
 /// 2. PCM player (phone speaker output)
 /// 3. Level meter (RMS dBFS computation)
+///
+/// A 2-frame jitter buffer absorbs BLE timing hiccups before playback.
 class AudioPipeline {
   AudioPipeline()
       : _spectrogram = SpectrogramProcessor(),
@@ -17,44 +20,72 @@ class AudioPipeline {
   final SpectrogramProcessor _spectrogram;
   final PcmPlayer _player;
 
+  bool spectroEnabled = true;
+
+  static const int _jitterFrames = 2;
+  final Queue<Int16List> _jitterBuffer = Queue<Int16List>();
+  bool _primed = false;
+  bool _smooth = true;
+
+  bool get smooth => _smooth;
+
+  void setSmooth(bool value) {
+    _smooth = value;
+    if (!value && _jitterBuffer.isNotEmpty) {
+      while (_jitterBuffer.isNotEmpty) {
+        _player.enqueue(_jitterBuffer.removeFirst());
+      }
+    }
+  }
+
   final _spectrumController = StreamController<SpectrogramUpdate>.broadcast();
   final _levelController = StreamController<double>.broadcast();
 
-  /// Spectrogram update stream — emits after each FFT computation.
   Stream<SpectrogramUpdate> get spectrumStream => _spectrumController.stream;
-
-  /// Audio level stream — emits RMS dBFS after each frame.
   Stream<double> get levelStream => _levelController.stream;
-
-  /// Access the spectrogram processor (for reading rolling buffer in painter).
   SpectrogramProcessor get spectrogram => _spectrogram;
 
-  /// Initialize the audio output.
   Future<void> init() async {
     await _player.init();
   }
 
   /// Flush all buffers (call on reconnect).
   Future<void> flush() async {
+    _jitterBuffer.clear();
+    _primed = false;
     await _player.flush();
   }
 
   /// Process one PCM frame from BLE.
   void onPcmFrame(Int16List pcmFrame) {
-    // 1. Compute FFT spectrum
-    final spectrum = _spectrogram.process(pcmFrame);
-    _spectrumController.add(SpectrogramUpdate(
-      spectrum: spectrum,
-      columns: _spectrogram.columns,
-      columnIndex: _spectrogram.columnIndex,
-    ));
+    // 1. Spectrogram + level (skip if disabled to save CPU)
+    if (spectroEnabled) {
+      final spectrum = _spectrogram.process(pcmFrame);
+      _spectrumController.add(SpectrogramUpdate(
+        spectrum: spectrum,
+        columns: _spectrogram.columns,
+        columnIndex: _spectrogram.columnIndex,
+      ));
+      final level = SpectrogramProcessor.computeRmsDbfs(pcmFrame);
+      _levelController.add(level);
+    }
 
-    // 2. Compute RMS level
-    final level = SpectrogramProcessor.computeRmsDbfs(pcmFrame);
-    _levelController.add(level);
-
-    // 3. Play on speaker
-    _player.enqueue(pcmFrame);
+    // 2. Play on speaker
+    if (!_smooth) {
+      _player.enqueue(pcmFrame);
+      return;
+    }
+    _jitterBuffer.addLast(pcmFrame);
+    if (!_primed) {
+      if (_jitterBuffer.length >= _jitterFrames) {
+        _primed = true;
+      } else {
+        return;
+      }
+    }
+    if (_jitterBuffer.isNotEmpty) {
+      _player.enqueue(_jitterBuffer.removeFirst());
+    }
   }
 
   /// Clean up resources.

@@ -13,9 +13,9 @@ class AudioConstants {
   static const int sampleRate = 24000;
   static const int sampleBits = 16;
   static const int channels = 1;
-  static const int frameMs = 5;
-  static const int frameSamples = sampleRate * frameMs ~/ 1000; // 120
-  static const int frameBytes = frameSamples * (sampleBits ~/ 8); // 240
+  static const int frameMs = 10;
+  static const int frameSamples = sampleRate * frameMs ~/ 1000; // 240
+  static const int frameBytes = frameSamples * (sampleBits ~/ 8); // 480
 
   static const int fftSize = 512;
   static const int frequencyBins = fftSize ~/ 2; // 256
