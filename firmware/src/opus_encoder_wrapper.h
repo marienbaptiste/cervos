@@ -12,7 +12,7 @@
 /* Opus encoding parameters */
 #define OPUS_SAMPLE_RATE    24000
 #define OPUS_CHANNELS       1       /* Mono — halves encoding CPU */
-#define OPUS_FRAME_MS       20      /* 20ms frames — best Opus efficiency */
+#define OPUS_FRAME_MS       10      /* 10ms frames — low latency, sustainable */
 #define OPUS_FRAME_SAMPLES  (OPUS_SAMPLE_RATE * OPUS_FRAME_MS / 1000)  /* 960 per channel */
 #define OPUS_BITRATE        96000   /* 96kbps — fits in single BLE notification */
 #define OPUS_MAX_PACKET     512     /* Max encoded frame bytes */

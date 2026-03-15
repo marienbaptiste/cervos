@@ -14,10 +14,10 @@ class AudioConstants {
   static const int sampleRate = 24000;
   static const int sampleBits = 16;
   static const int channels = 1;
-  static const int frameMs = 20;
-  static const int frameSamplesPerChannel = sampleRate * frameMs ~/ 1000; // 960
-  static const int frameSamples = frameSamplesPerChannel * channels; // 1920
-  static const int frameBytes = frameSamples * (sampleBits ~/ 8); // 3840
+  static const int frameMs = 10;
+  static const int frameSamplesPerChannel = sampleRate * frameMs ~/ 1000; // 240
+  static const int frameSamples = frameSamplesPerChannel * channels; // 240
+  static const int frameBytes = frameSamples * (sampleBits ~/ 8); // 480
 
   // BLE receives variable-length Opus packets (not fixed PCM frames)
   static const bool useOpus = true;
