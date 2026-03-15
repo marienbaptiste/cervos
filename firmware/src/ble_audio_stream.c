@@ -98,6 +98,10 @@ static void connected(struct bt_conn *conn, uint8_t err)
     current_conn = bt_conn_ref(conn);
     LOG_INF("BLE connected");
 
+    /* Enable USB audio — PC will see "cervhole headset" */
+    capture_enabled = 1;
+    usb_enable(NULL);
+
     /* Flush stale audio from ring buffer */
     audio_buffer_flush(&audio_ring_buffer);
 
@@ -125,6 +129,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
         current_conn = NULL;
     }
     notify_enabled = false;
+
+    /* Disable USB — release PC audio back to default */
+    capture_enabled = 0;
+    usb_disable();
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {

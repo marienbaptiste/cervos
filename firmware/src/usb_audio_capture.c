@@ -110,6 +110,9 @@ int usb_audio_init(void)
         return ret;
     }
 
-    LOG_INF("USB Audio initialized — 48kHz stereo → 24kHz mono (80Hz-8kHz bandpass)");
+    /* Disable immediately — BLE module will enable when phone connects */
+    usb_disable();
+
+    LOG_INF("USB Audio initialized (disabled until BLE connect)");
     return 0;
 }

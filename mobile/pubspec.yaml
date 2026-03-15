@@ -28,6 +28,9 @@ dependencies:
   google_fonts: ^6.1.0
   permission_handler: ^11.3.0
 
+  # Foreground service for background audio streaming
+  flutter_foreground_task: ^8.0.0
+
 flutter:
   uses-material-design: true
 

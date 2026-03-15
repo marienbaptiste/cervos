@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import '../audio/audio_pipeline.dart';
 import '../audio/audio_state.dart';
@@ -81,12 +82,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _levelSub = null;
     _latestSpectrum = null;
     _latestLevel = -100.0;
+    _stopForegroundService();
     final connection = ref.read(dongleConnectionProvider);
     connection.disconnect();
   }
 
+  void _initForegroundTask() {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'cervos_audio',
+        channelName: 'Cervos Audio',
+        channelDescription: 'BLE audio streaming from dongle',
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.nothing(),
+        autoRunOnBoot: false,
+        autoRunOnMyPackageReplaced: false,
+        allowWakeLock: true,
+        allowWifiLock: false,
+      ),
+    );
+  }
+
+  Future<void> _startForegroundService() async {
+    _initForegroundTask();
+    await FlutterForegroundTask.startService(
+      notificationTitle: 'Cervos Audio',
+      notificationText: 'Streaming from cervhole dongle',
+    );
+  }
+
+  Future<void> _stopForegroundService() async {
+    await FlutterForegroundTask.stopService();
+  }
+
   Future<void> _startAudioPipeline() async {
     if (_audioSub != null) return;
+
+    await _startForegroundService();
 
     final pipeline = ref.read(audioPipelineProvider);
     if (!_pipelineInitialized) {

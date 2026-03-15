@@ -25,7 +25,7 @@ class AudioPipeline {
   static const int _jitterFrames = 2;
   final Queue<Int16List> _jitterBuffer = Queue<Int16List>();
   bool _primed = false;
-  bool _smooth = true;
+  bool _smooth = false;
 
   bool get smooth => _smooth;
 

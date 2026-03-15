@@ -16,6 +16,11 @@ public final class GeneratedPluginRegistrant {
   private static final String TAG = "GeneratedPluginRegistrant";
   public static void registerWith(@NonNull FlutterEngine flutterEngine) {
     try {
+      flutterEngine.getPlugins().add(new com.pravera.flutter_foreground_task.FlutterForegroundTaskPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin flutter_foreground_task, com.pravera.flutter_foreground_task.FlutterForegroundTaskPlugin", e);
+    }
+    try {
       flutterEngine.getPlugins().add(new com.lib.flutter_pcm_sound.FlutterPcmSoundPlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin flutter_pcm_sound, com.lib.flutter_pcm_sound.FlutterPcmSoundPlugin", e);
@@ -34,6 +39,11 @@ public final class GeneratedPluginRegistrant {
       flutterEngine.getPlugins().add(new com.signify.hue.flutterreactiveble.ReactiveBlePlugin());
     } catch (Exception e) {
       Log.e(TAG, "Error registering plugin reactive_ble_mobile, com.signify.hue.flutterreactiveble.ReactiveBlePlugin", e);
+    }
+    try {
+      flutterEngine.getPlugins().add(new io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin());
+    } catch (Exception e) {
+      Log.e(TAG, "Error registering plugin shared_preferences_android, io.flutter.plugins.sharedpreferences.SharedPreferencesPlugin", e);
     }
   }
 }
