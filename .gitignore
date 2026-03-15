@@ -18,6 +18,9 @@ server/models/ollama/*
 server/models/stt/*
 !server/models/**/.gitkeep
 
+# Firmware dependencies (cloned at build time)
+firmware/lib/
+
 # Flutter
 mobile/.dart_tool/
 mobile/.packages
@@ -25,6 +28,7 @@ mobile/build/
 mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
 mobile/pubspec.lock
+mobile/android/.gradle/
 
 # Python
 __pycache__/

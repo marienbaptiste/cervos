@@ -143,7 +143,9 @@
       "Bash(curl -sL https://api.github.com/repos/ubicore/nrf52_audio_opus_sgtl5000/git/trees/master?recursive=1)",
       "Bash(curl -sL \"https://raw.githubusercontent.com/ubicore/nrf52_audio_opus_sgtl5000/master/src/audio/audio_codec_opus.c\")",
       "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/celt_pitch_xcorr_arm*.s)",
-      "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/*.S)"
+      "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/*.S)",
+      "Bash(sed -i 's/\\\\r$//' .gitignore)",
+      "Bash(python -c \":*)"
     ]
   }
 }
