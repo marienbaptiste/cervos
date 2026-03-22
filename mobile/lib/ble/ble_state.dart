@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -35,8 +37,8 @@ final dongleStateProvider = StreamProvider<DongleState>((ref) {
   return connection.stateStream;
 });
 
-/// LC3 packet stream from the dongle (parsed, deduplicated).
-final lc3PacketProvider = StreamProvider<Lc3Packet>((ref) {
+/// LC3 frame stream from the dongle — each event is one compressed frame.
+final lc3FrameProvider = StreamProvider<Uint8List>((ref) {
   final connection = ref.watch(dongleConnectionProvider);
   return connection.lc3Stream;
 });

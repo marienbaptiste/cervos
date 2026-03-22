@@ -41,19 +41,9 @@ class AudioPipeline {
     await _player.flush();
   }
 
-  /// Process one raw PCM frame directly (no codec).
-  void onPcmFrame(Int16List pcmFrame) {
-    _processDecodedFrame(pcmFrame);
-  }
-
-  /// Process one LC3 packet from BLE.
-  Future<void> onLc3Packet(Lc3Packet packet) async {
-    Int16List? pcmFrame;
-    if (packet.isMono) {
-      pcmFrame = await _lc3Decoder.decodeMono(packet.lc3Data);
-    } else {
-      pcmFrame = await _lc3Decoder.decodeStereo(packet.lc3Data);
-    }
+  /// Process one LC3 frame — synchronous decode via dart:ffi.
+  void onLc3Frame(Uint8List lc3Data) {
+    final pcmFrame = _lc3Decoder.decode(lc3Data);
     if (pcmFrame == null) return;
     _processDecodedFrame(pcmFrame);
   }

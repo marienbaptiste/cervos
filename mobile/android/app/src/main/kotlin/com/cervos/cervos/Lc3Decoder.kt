@@ -14,5 +14,6 @@ class Lc3Decoder {
     external fun nativeInit(): Int
     external fun nativeDecodeStereo(lc3Data: ByteArray, dataLen: Int): ShortArray?
     external fun nativeDecodeMono(lc3Data: ByteArray, dataLen: Int): ShortArray?
+    external fun nativeSelfTest(): ByteArray?
     external fun nativeRelease()
 }

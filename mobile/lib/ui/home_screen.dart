@@ -31,7 +31,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _pipelineInitialized = false;
   bool _spectroEnabled = true;
 
-  StreamSubscription<Int16List>? _audioSub;
+  StreamSubscription<Uint8List>? _audioSub;
   StreamSubscription<SpectrogramUpdate>? _spectrumSub;
   StreamSubscription<double>? _levelSub;
 
@@ -151,8 +151,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     final connection = ref.read(dongleConnectionProvider);
 
-    _audioSub = connection.pcmStream.listen((Int16List pcmFrame) {
-      pipeline.onPcmFrame(pcmFrame);
+    int _logCount = 0;
+    _audioSub = connection.lc3Stream.listen((Uint8List lc3Frame) {
+      _logCount++;
+      if (_logCount <= 3) {
+        final hex = lc3Frame.take(8).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ');
+        debugPrint('BLE LC3 #$_logCount: ${lc3Frame.length}B first8=[$hex]');
+      }
+      pipeline.onLc3Frame(lc3Frame);
     });
 
     _spectrumSub = pipeline.spectrumStream.listen((update) {

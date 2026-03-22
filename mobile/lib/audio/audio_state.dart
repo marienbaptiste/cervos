@@ -22,13 +22,12 @@ final audioLevelProvider = StreamProvider<double>((ref) {
   return pipeline.levelStream;
 });
 
-/// Wires LC3 packets from BLE into the audio pipeline.
-/// This provider should be watched from the home screen to activate the pipeline.
+/// Wires LC3 frames from BLE into the audio pipeline.
 final audioBridgeProvider = Provider<void>((ref) {
   final pipeline = ref.watch(audioPipelineProvider);
-  final lc3Packet = ref.watch(lc3PacketProvider);
+  final lc3Frame = ref.watch(lc3FrameProvider);
 
-  lc3Packet.whenData((packet) {
-    pipeline.onLc3Packet(packet);
+  lc3Frame.whenData((frame) {
+    pipeline.onLc3Frame(frame);
   });
 });

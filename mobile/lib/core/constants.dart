@@ -24,14 +24,17 @@ enum PowerMode {
 class AudioConstants {
   AudioConstants._();
 
-  // Raw PCM: 24kHz mono (downsampled from 48kHz stereo on dongle)
+  // LC3 decoded: 24kHz mono, 10ms frames
   static const int sampleRate = 24000;
   static const int sampleBits = 16;
   static const int channels = 1;
-  static const int frameMs = 20;
-  static const int frameSamplesPerChannel = sampleRate * frameMs ~/ 1000; // 480
-  static const int frameSamples = frameSamplesPerChannel * channels; // 480
-  static const int frameBytes = frameSamples * (sampleBits ~/ 8); // 960
+  static const int frameMs = 10;
+  static const int frameSamplesPerChannel = sampleRate * frameMs ~/ 1000; // 240
+  static const int frameSamples = frameSamplesPerChannel * channels; // 240
+  static const int frameBytes = frameSamples * (sampleBits ~/ 8); // 480
+
+  // LC3 compressed frame size (~48kbps mono)
+  static const int lc3FrameBytes = 60;
 
   // Spectrogram
   static const int fftSize = 1024;

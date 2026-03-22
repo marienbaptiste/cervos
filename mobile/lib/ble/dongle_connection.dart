@@ -31,14 +31,14 @@ class DongleConnection {
   int _lastSeqNum = -1;
 
   final _stateController = StreamController<DongleState>.broadcast();
-  final _lc3Controller = StreamController<Lc3Packet>.broadcast();
+  final _lc3Controller = StreamController<Uint8List>.broadcast();
   final _pcmController = StreamController<Int16List>.broadcast();
 
   /// Connection state stream.
   Stream<DongleState> get stateStream => _stateController.stream;
 
-  /// Parsed LC3 packet stream (after deduplication).
-  Stream<Lc3Packet> get lc3Stream => _lc3Controller.stream;
+  /// LC3 frame stream — each event is one compressed LC3 frame.
+  Stream<Uint8List> get lc3Stream => _lc3Controller.stream;
 
   /// Raw PCM frame stream (accumulated from BLE notification chunks).
   Stream<Int16List> get pcmStream => _pcmController.stream;
@@ -142,10 +142,15 @@ class DongleConnection {
 
     _stateController.add(DongleState.connected);
 
-    // Subscribe to GATT audio notifications — raw PCM chunks
+    // Subscribe to GATT audio notifications — each is one LC3 frame
     try {
       _l2capSub = _bleManager.subscribeToAudio(_deviceId!).listen(
-        (List<int> data) => _processRawPcm(data),
+        (List<int> data) {
+          _rawPacketCount++;
+          _totalBytesReceived += data.length;
+          // Each notification = one complete LC3 frame
+          _lc3Controller.add(Uint8List.fromList(data));
+        },
         onError: (Object error) {
           _lastError = 'Audio stream err: $error';
         },

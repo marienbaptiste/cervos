@@ -33,12 +33,20 @@ target_include_directories(app PRIVATE
     ${LC3_DIR}/include
 )
 
-# LC3 uses float internally — nRF52840 has hardware FPU (Cortex-M4F)
+# Disable ARM DSP optimizations — they produce bitstream incompatible
+# with the generic C path used on the phone (AArch64).
+# Force generic C code path by undefining __arm__.
+target_compile_definitions(app PRIVATE
+    LC3_DISABLE_ARM
+)
 
-# LC3 sources require C11 for alignas() in ARM-optimized paths
+# Override the ARM detection in liblc3 sources
 set_source_files_properties(
     ${LC3_DIR}/src/ltpf.c
-    PROPERTIES COMPILE_FLAGS "-std=c11"
+    ${LC3_DIR}/src/mdct.c
+    ${LC3_DIR}/src/sns.c
+    ${LC3_DIR}/src/spec.c
+    PROPERTIES COMPILE_FLAGS "-U__arm__ -U__ARM_ARCH -std=c11"
 )
 
 target_compile_options(app PRIVATE -O2)
