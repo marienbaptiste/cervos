@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ble/ble_state.dart';
@@ -24,13 +22,13 @@ final audioLevelProvider = StreamProvider<double>((ref) {
   return pipeline.levelStream;
 });
 
-/// Wires BLE audio frames into the audio pipeline.
+/// Wires LC3 packets from BLE into the audio pipeline.
 /// This provider should be watched from the home screen to activate the pipeline.
 final audioBridgeProvider = Provider<void>((ref) {
   final pipeline = ref.watch(audioPipelineProvider);
-  final audioFrame = ref.watch(audioFrameProvider);
+  final lc3Packet = ref.watch(lc3PacketProvider);
 
-  audioFrame.whenData((Int16List frame) {
-    pipeline.onPcmFrame(frame);
+  lc3Packet.whenData((packet) {
+    pipeline.onLc3Packet(packet);
   });
 });

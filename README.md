@@ -90,6 +90,58 @@ cp config.example.yaml config.yaml
 
 The setup script installs native inference (mlx-lm, Whisper, Ollama), starts Docker services (nginx, OpenClaw, SearXNG, Chroma, console), joins your Tailnet, generates mTLS certificates, and runs a self-test. See the full [Setup Guide](docs/setup-guide.md).
 
+### Building
+
+All builds use `scripts/env.sh` for environment setup. Edit the paths in that file for your machine, then:
+
+```bash
+source scripts/env.sh
+```
+
+See [requirements.md](requirements.md) for full installation instructions and known issues.
+
+#### Firmware (nRF52840 Dongle)
+
+```bash
+# Clone LC3 codec (one-time)
+git clone https://github.com/google/liblc3.git firmware/lib/liblc3
+
+# Build
+cd firmware
+west build -b nrf52840dongle/nrf52840 -p always .
+
+# Generate DFU package
+nrfutil nrf5sdk-tools pkg generate \
+  --application build/zephyr/zephyr.hex \
+  --hw-version 52 --sd-req 0x00 --application-version 2 \
+  build/cervos_dfu.zip
+
+# Flash (press reset button on dongle first → LED pulses)
+nrfutil nrf5sdk-tools dfu serial \
+  -pkg build/cervos_dfu.zip -p COM4 -b 115200
+# Linux/macOS: replace COM4 with /dev/ttyACM0
+```
+
+> **Warning:** Do NOT use pip `nrfutil` or `adafruit-nrfutil` for flashing — they are broken on Python 3.13. Use the Go-based `nrfutil` binary from [Nordic's download page](https://www.nordicsemi.com/Products/Development-tools/nrf-util).
+
+#### Flutter App
+
+**Prerequisites:**
+- [Flutter SDK](https://docs.flutter.dev/get-started/install) 3.16+
+- Android SDK with NDK 25+ and CMake 3.22+ (`sdkmanager "cmake;3.22.1" "ndk;25.1.8937393"`)
+- Java 17+ (for Gradle)
+
+```bash
+# Clone LC3 codec for Android NDK decoder (one-time)
+git clone https://github.com/google/liblc3.git mobile/android/app/src/main/cpp/liblc3
+
+# Build and install
+cd mobile
+flutter pub get
+flutter build apk --debug
+flutter install -d <device-id>
+```
+
 ## Project Structure
 
 ```

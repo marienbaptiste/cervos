@@ -40,6 +40,53 @@ Route to the appropriate rules file based on what you're working on:
 - The `.gitignore` blocks `config.yaml`, certs, and data directories.
 - If you see a secret in any file, flag it immediately.
 
+## Build tooling
+
+All build commands use `scripts/env.sh` for environment setup. **Source it first:**
+```bash
+source scripts/env.sh
+```
+
+### Firmware (nRF52840 dongle)
+
+**Requirements:** See `requirements.md` for full setup. Key tools: Zephyr workspace, GNU ARM Toolchain 13.x+, CMake 3.20+, `west` (pip + `pyyaml>=6.0`), `nrfutil` (Go binary from Nordic — **NOT** pip packages)
+
+```bash
+# Clone liblc3 (if not already present)
+git clone https://github.com/google/liblc3.git firmware/lib/liblc3
+
+# Build
+cd firmware && "$WEST" build -b nrf52840dongle/nrf52840 -p always .
+
+# Generate DFU package
+"$NRFUTIL" nrf5sdk-tools pkg generate \
+  --application build/zephyr/zephyr.hex \
+  --hw-version 52 --sd-req 0x00 --application-version 2 \
+  build/cervos_dfu.zip
+
+# Flash (press reset on dongle first to enter bootloader)
+"$NRFUTIL" nrf5sdk-tools dfu serial -pkg build/cervos_dfu.zip -p COM4 -b 115200
+```
+
+**NEVER use pip `nrfutil` or `adafruit-nrfutil` for flashing.** They are broken on Python 3.13 Windows. Use the Go-based `nrfutil` binary (`$NRFUTIL` from env.sh).
+
+### Flutter app
+
+**Requirements:** See `requirements.md`. Key tools: Flutter 3.16+, Android SDK with NDK 25+ + CMake 3.22+, Java 17+
+
+```bash
+# Clone liblc3 for NDK decoder (if not already present)
+git clone https://github.com/google/liblc3.git mobile/android/app/src/main/cpp/liblc3
+
+# Build + install
+cd mobile && flutter build apk --debug
+flutter install -d <device-id> --use-application-binary build/app/outputs/flutter-apk/app-debug.apk
+```
+
+### External dependencies (not committed)
+- `firmware/lib/liblc3/` — google/liblc3, cloned at build time
+- `mobile/android/app/src/main/cpp/liblc3/` — same, for Android NDK decoder
+
 ## Workflow
 
 1. Check the Notion changelog (`323c6ebc177f81ca8680ed6e1e0faaa4`) for pending tasks

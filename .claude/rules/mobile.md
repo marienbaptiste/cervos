@@ -8,8 +8,11 @@
 
 ## Tech stack
 - **Language**: Dart (Flutter)
-- **State management**: Riverpod or Bloc (decide during Phase 2)
-- **BLE**: `flutter_reactive_ble`
+- **State management**: Riverpod
+- **BLE GATT**: `flutter_reactive_ble` (config characteristics: capture, name, power mode)
+- **BLE L2CAP**: Native Android plugin (`L2capAudioPlugin`) for CoC audio streaming
+- **LC3 decoder**: Android NDK via platform channel (`Lc3DecoderPlugin`, google/liblc3)
+- **Audio output**: Oboe/AAudio via `flutter_pcm_sound` (48kHz stereo)
 - **Database**: SQLCipher (AES-256-CBC, 256K PBKDF2 iterations)
 - **Key storage**: Android Keystore (hardware TEE / StrongBox)
 - **Biometrics**: `local_auth` package
@@ -27,6 +30,20 @@ mobile/lib/
 ├── journal/       # Action journal, SQLCipher, biometric gating
 └── core/          # Config, Tailscale, HTTP client, models
 ```
+
+## Audio architecture
+- Dongle streams LC3 over BLE L2CAP CoC (not GATT notifications)
+- Packet format: `[seq_num:u16][timestamp:u32][frame_count:u8][LC3 frames...]`
+- Duplicate-frame resilience: packets carry current + previous frame; receiver deduplicates by seq_num
+- LC3 decode happens in NDK (C via JNI), exposed to Dart via platform channel
+- Decoded 48kHz stereo PCM plays through Oboe/AAudio to BLE earbuds
+- Same decoded PCM forwarded to Mac Studio via Tailscale for STT
+
+## Power modes
+Three modes configurable from Settings, written to dongle via `0xCF02` GATT characteristic:
+- **Battery Saver**: 30ms CI, 50ms buffer, ~80ms latency, ~25mW
+- **Balanced** (default): 15ms CI, 30ms buffer, ~55ms latency, ~35mW
+- **Low Latency**: 7.5ms CI, 10ms buffer, ~35ms latency, ~50mW
 
 ## Conventions
 - The Flutter app is a **thin gateway** — it does NOT make AI decisions, only routes

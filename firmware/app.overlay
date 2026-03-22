@@ -1,6 +1,6 @@
 /*
- * Devicetree overlay for nRF52840 Dongle — "cervhole headset"
- * USB Audio Class with headphones + microphone (Windows requires both).
+ * Devicetree overlay for nRF52840 Dongle — Cervos Meeting Bridge
+ * USB Audio Class. NVS uses the board's built-in storage_partition.
  */
 
 &zephyr_udc0 {

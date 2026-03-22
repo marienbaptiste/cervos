@@ -1,26 +1,26 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'opus_decoder.dart';
+import '../ble/dongle_connection.dart';
+import 'lc3_decoder.dart';
 import 'spectrogram_processor.dart';
 import 'pcm_player.dart';
 
 /// Central audio coordinator.
-/// Receives BLE PCM frames and fans out to:
-/// 1. Spectrogram processor (FFT → frequency bins)
-/// 2. PCM player (phone speaker output)
-/// 3. Level meter (RMS dBFS computation)
-///
-/// A 2-frame jitter buffer absorbs BLE timing hiccups before playback.
+/// Receives LC3 packets from BLE L2CAP CoC and fans out to:
+/// 1. LC3 decoder (NDK) → 48kHz stereo PCM
+/// 2. Spectrogram processor (FFT → frequency bins)
+/// 3. PCM player (Oboe/AAudio → BLE earbuds)
+/// 4. Level meter (RMS dBFS computation)
 class AudioPipeline {
   AudioPipeline()
       : _spectrogram = SpectrogramProcessor(),
         _player = PcmPlayer(),
-        _opusDecoder = OpusAudioDecoder();
+        _lc3Decoder = Lc3AudioDecoder();
 
   final SpectrogramProcessor _spectrogram;
   final PcmPlayer _player;
-  final OpusAudioDecoder _opusDecoder;
+  final Lc3AudioDecoder _lc3Decoder;
 
   bool spectroEnabled = true;
 
@@ -32,7 +32,7 @@ class AudioPipeline {
   SpectrogramProcessor get spectrogram => _spectrogram;
 
   Future<void> init() async {
-    await _opusDecoder.init();
+    await _lc3Decoder.init();
     await _player.init();
   }
 
@@ -41,15 +41,15 @@ class AudioPipeline {
     await _player.flush();
   }
 
-  /// Process one Opus packet from BLE.
-  void onOpusPacket(Uint8List opusPacket) {
-    final pcmFrame = _opusDecoder.decode(opusPacket);
+  /// Process one LC3 packet from BLE L2CAP.
+  Future<void> onLc3Packet(Lc3Packet packet) async {
+    Int16List? pcmFrame;
+    if (packet.isMono) {
+      pcmFrame = await _lc3Decoder.decodeMono(packet.lc3Data);
+    } else {
+      pcmFrame = await _lc3Decoder.decodeStereo(packet.lc3Data);
+    }
     if (pcmFrame == null) return;
-    _processDecodedFrame(pcmFrame);
-  }
-
-  /// Process one raw PCM frame (fallback for non-Opus mode).
-  void onPcmFrame(Int16List pcmFrame) {
     _processDecodedFrame(pcmFrame);
   }
 
@@ -66,12 +66,12 @@ class AudioPipeline {
       _levelController.add(level);
     }
 
-    // 2. Play on speaker
+    // 2. Play on earbuds via Oboe/AAudio
     _player.enqueue(pcmFrame);
   }
 
-  /// Clean up resources.
   Future<void> dispose() async {
+    await _lc3Decoder.dispose();
     await _player.dispose();
     _spectrumController.close();
     _levelController.close();
@@ -86,10 +86,10 @@ class SpectrogramUpdate {
     required this.columnIndex,
   });
 
-  /// Current frame's magnitude spectrum in dB (256 bins, 0–8kHz).
+  /// Current frame's magnitude spectrum in dB.
   final Float64List spectrum;
 
-  /// Rolling buffer of all columns (100 columns = 2 seconds).
+  /// Rolling buffer of all columns.
   final List<Float64List> columns;
 
   /// Current write position in the rolling buffer.

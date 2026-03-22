@@ -1,8 +1,8 @@
 name: cervos
-description: Cervos ambient AI assistant — BLE audio bridge & spectrogram
+description: Cervos ambient AI assistant — BLE LC3 audio bridge & spectrogram
 
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.2.0+1
 
 environment:
   sdk: ">=3.2.0 <4.0.0"
@@ -12,18 +12,17 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # BLE
+  # BLE (GATT for config, L2CAP CoC via native plugin for audio)
   flutter_reactive_ble: ^5.3.1
 
   # State management
   flutter_riverpod: ^2.5.1
 
-  # Audio playback — raw PCM buffer output
+  # Audio playback — raw PCM buffer output (Oboe/AAudio on Android)
   flutter_pcm_sound: ^1.0.0
 
-  # Opus decoder for BLE audio
-  opus_dart: ^3.0.0
-  opus_flutter: ^3.0.0
+  # LC3 decoder: native NDK via platform channel (no pub package needed)
+  # See android/app/src/main/cpp/ for liblc3 integration
 
   # FFT for spectrogram
   fft: ^0.5.1

@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -37,8 +35,8 @@ final dongleStateProvider = StreamProvider<DongleState>((ref) {
   return connection.stateStream;
 });
 
-/// Audio frame stream from the dongle — each event is 320 int16 samples.
-final audioFrameProvider = StreamProvider<Int16List>((ref) {
+/// LC3 packet stream from the dongle (parsed, deduplicated).
+final lc3PacketProvider = StreamProvider<Lc3Packet>((ref) {
   final connection = ref.watch(dongleConnectionProvider);
-  return connection.audioStream;
+  return connection.lc3Stream;
 });

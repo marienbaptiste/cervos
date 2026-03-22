@@ -21,6 +21,9 @@ server/models/stt/*
 # Firmware dependencies (cloned at build time)
 firmware/lib/
 
+# Android NDK dependencies (cloned at build time)
+mobile/android/app/src/main/cpp/liblc3/
+
 # Flutter
 mobile/.dart_tool/
 mobile/.packages
@@ -29,6 +32,11 @@ mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
 mobile/pubspec.lock
 mobile/android/.gradle/
+mobile/android/app/.cxx/
+mobile/android/local.properties
+
+# Firmware build output
+firmware/build/
 
 # Python
 __pycache__/

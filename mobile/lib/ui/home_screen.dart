@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -31,7 +30,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _pipelineInitialized = false;
   bool _spectroEnabled = true;
 
-  StreamSubscription<Uint8List>? _audioSub;
+  StreamSubscription<Lc3Packet>? _audioSub;
   StreamSubscription<SpectrogramUpdate>? _spectrumSub;
   StreamSubscription<double>? _levelSub;
 
@@ -51,7 +50,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final pipeline = ref.read(audioPipelineProvider);
     if (state == AppLifecycleState.inactive) {
-      // Pre-disable viz on inactive (before paused) to free CPU early
       _spectroWasEnabled = pipeline.spectroEnabled;
       pipeline.spectroEnabled = false;
     } else if (state == AppLifecycleState.resumed) {
@@ -129,7 +127,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _initForegroundTask();
     await FlutterForegroundTask.startService(
       notificationTitle: 'Cervos Audio',
-      notificationText: 'Streaming from cervhole dongle',
+      notificationText: 'Streaming LC3 from dongle',
     );
   }
 
@@ -152,8 +150,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     final connection = ref.read(dongleConnectionProvider);
 
-    _audioSub = connection.opusStream.listen((Uint8List packet) {
-      pipeline.onOpusPacket(packet);
+    _audioSub = connection.lc3Stream.listen((Lc3Packet packet) {
+      pipeline.onLc3Packet(packet);
     });
 
     _spectrumSub = pipeline.spectrumStream.listen((update) {
@@ -269,6 +267,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           LevelMeter(dbfs: _latestLevel),
         ],
         const SizedBox(height: Spacing.sm),
+        // Controls row: VIZ toggle + Power mode selector
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -280,7 +279,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 });
               },
               icon: Icon(
-                _spectroEnabled ? Icons.equalizer_rounded : Icons.equalizer_rounded,
+                Icons.equalizer_rounded,
                 size: 16,
               ),
               label: Text(_spectroEnabled ? 'VIZ' : 'OFF', style: const TextStyle(fontSize: 11)),
@@ -296,6 +295,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
               ),
             ),
+            const SizedBox(width: Spacing.sm),
+            _buildPowerModeButton(connection),
           ],
         ),
         const SizedBox(height: Spacing.lg),
@@ -340,6 +341,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ],
         ),
       ],
+    );
+  }
+
+  Widget _buildPowerModeButton(DongleConnection connection) {
+    final mode = connection.powerMode;
+    return PopupMenuButton<PowerMode>(
+      onSelected: (PowerMode selected) async {
+        await connection.setPowerMode(selected);
+        setState(() {});
+      },
+      itemBuilder: (context) => PowerMode.values.map((m) {
+        return PopupMenuItem<PowerMode>(
+          value: m,
+          child: ListTile(
+            dense: true,
+            leading: Icon(
+              m == mode ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+              size: 18,
+              color: m == mode ? CervosTheme.badgeLocal : CervosTheme.textSecondary,
+            ),
+            title: Text(m.label, style: const TextStyle(fontSize: 13)),
+            subtitle: Text(m.description, style: const TextStyle(fontSize: 11)),
+          ),
+        );
+      }).toList(),
+      child: OutlinedButton.icon(
+        onPressed: null, // Handled by PopupMenuButton
+        icon: Icon(
+          mode == PowerMode.lowLatency
+              ? Icons.bolt_rounded
+              : mode == PowerMode.batterySaver
+                  ? Icons.battery_saver_rounded
+                  : Icons.tune_rounded,
+          size: 16,
+        ),
+        label: Text(mode.label, style: const TextStyle(fontSize: 11)),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: CervosTheme.badgeLocal,
+          side: const BorderSide(color: CervosTheme.level3),
+          padding: const EdgeInsets.symmetric(horizontal: Spacing.md),
+        ),
+      ),
     );
   }
 }

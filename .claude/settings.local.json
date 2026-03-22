@@ -145,7 +145,30 @@
       "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/celt_pitch_xcorr_arm*.s)",
       "Bash(ls c:/CodeProjects/cervos/firmware/lib/opus-1.2.1/celt/arm/*.S)",
       "Bash(sed -i 's/\\\\r$//' .gitignore)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(git clone:*)",
+      "Bash(flutter analyze:*)",
+      "Read(//c/CodeProjects/cervos/$LOCALAPPDATA/flutter/bin/**)",
+      "Read(//c/CodeProjects/cervos/$ANDROID_HOME/**)",
+      "Read(//c/CodeProjects/cervos/$ANDROID_SDK_ROOT/**)",
+      "Bash(flutter devices:*)",
+      "Bash(python -c \"import west; print\\(west.__file__\\)\")",
+      "Bash(ls /c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/west*)",
+      "Bash(WEST=\"/c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/west.exe\")",
+      "Bash(\"$WEST\" build:*)",
+      "Bash(find /c/dev/zephyr-workspace -maxdepth 2 -name *.cmake)",
+      "Bash(export ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb)",
+      "Bash(export PATH=\"/c/dev/android-sdk/cmake/3.22.1/bin:$PATH\")",
+      "Bash(source scripts/env.sh)",
+      "Bash(pip show:*)",
+      "Bash(python -c \"import nordicsemi; print\\(nordicsemi.__file__\\)\")",
+      "Bash(nrfutil version:*)",
+      "Bash(ls /c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/nrfutil*)",
+      "Bash(NRFUTIL=\"/c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/nrfutil.exe\")",
+      "Bash(\"$NRFUTIL\" --help)",
+      "Bash(\"/c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/nrfutil.exe\" --help)",
+      "Bash(python -c \"import serial.tools.list_ports; [print\\(p.device, p.description\\) for p in serial.tools.list_ports.comports\\(\\)]\")",
+      "Bash(\"/c/Users/marie/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/Scripts/nrfutil.exe\" dfu:*)"
     ]
   }
 }
