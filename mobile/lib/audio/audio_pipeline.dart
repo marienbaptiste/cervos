@@ -41,7 +41,12 @@ class AudioPipeline {
     await _player.flush();
   }
 
-  /// Process one LC3 packet from BLE L2CAP.
+  /// Process one raw PCM frame directly (no codec).
+  void onPcmFrame(Int16List pcmFrame) {
+    _processDecodedFrame(pcmFrame);
+  }
+
+  /// Process one LC3 packet from BLE.
   Future<void> onLc3Packet(Lc3Packet packet) async {
     Int16List? pcmFrame;
     if (packet.isMono) {

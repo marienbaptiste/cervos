@@ -98,6 +98,17 @@ class BleManager {
     );
   }
 
+  /// Subscribe to audio GATT notifications.
+  /// Each notification is one packet: [seq:u16][ts:u32][count:u8][LC3 frame].
+  Stream<List<int>> subscribeToAudio(String deviceId) {
+    final characteristic = QualifiedCharacteristic(
+      serviceId: BleUuids.audioService,
+      characteristicId: BleUuids.audioStream,
+      deviceId: deviceId,
+    );
+    return _ble.subscribeToCharacteristic(characteristic);
+  }
+
   /// Read dongle name.
   Future<String> readDongleName(String deviceId) async {
     final characteristic = QualifiedCharacteristic(
@@ -107,29 +118,5 @@ class BleManager {
     );
     final value = await _ble.readCharacteristic(characteristic);
     return String.fromCharCodes(value);
-  }
-
-  /// Connect L2CAP CoC for audio streaming (native Android).
-  Future<bool> connectL2cap(String deviceAddress) async {
-    final result = await _l2capMethod.invokeMethod<bool>('connectL2cap', {
-      'address': deviceAddress,
-      'psm': BleUuids.audioL2capPsm,
-    });
-    return result ?? false;
-  }
-
-  /// Disconnect L2CAP audio channel.
-  Future<void> disconnectL2cap() async {
-    await _l2capMethod.invokeMethod<void>('disconnectL2cap');
-  }
-
-  /// L2CAP audio packet stream — raw bytes including header + LC3 frames.
-  Stream<Uint8List> get l2capAudioStream {
-    return _l2capEvent.receiveBroadcastStream().map((data) {
-      if (data is List<int>) {
-        return Uint8List.fromList(data);
-      }
-      return data as Uint8List;
-    });
   }
 }

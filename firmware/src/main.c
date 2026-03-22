@@ -41,35 +41,23 @@ int main(void)
         LOG_WRN("USB init issue: %d", ret);
     }
 
-    /* LC3 encoder — non-fatal, fall back to raw PCM if it fails */
-    static bool lc3_ok = false;
-    ret = lc3_enc_init();
-    if (ret) {
-        LOG_WRN("LC3 encoder init failed: %d — raw PCM fallback", ret);
-    } else {
-        lc3_ok = true;
-    }
-
-    LOG_INF("Dongle ready — codec: %s", lc3_ok ? "LC3 48kHz stereo" : "raw PCM fallback");
+    LOG_INF("Dongle ready — raw PCM 24kHz mono over GATT");
 
     static int16_t pcm_frame[AUDIO_FRAME_SAMPLES];
-    static uint8_t lc3_packet[LC3_MAX_PACKET];
 
     while (1) {
         k_sem_take(&audio_ring_buffer.frame_ready, K_FOREVER);
 
         if (audio_buffer_read(&audio_ring_buffer, pcm_frame, AUDIO_FRAME_SAMPLES) == 0) {
-            if (lc3_ok) {
-                bool mono = ble_audio_is_mono_fallback();
-                int encoded = lc3_enc_encode(pcm_frame, lc3_packet,
-                                             sizeof(lc3_packet), mono);
-                if (encoded > 0) {
-                    ble_audio_send_lc3(lc3_packet, encoded);
-                }
-            } else {
-                /* Raw PCM fallback — send uncompressed */
-                ble_audio_send_lc3((const uint8_t *)pcm_frame,
-                                    AUDIO_FRAME_SAMPLES * sizeof(int16_t));
+            /* Send raw PCM in 240-byte chunks — 960 bytes / 240 = 4 notifications */
+            const uint8_t *data = (const uint8_t *)pcm_frame;
+            size_t total = AUDIO_FRAME_BYTES;
+            size_t offset = 0;
+            while (offset < total) {
+                size_t len = total - offset;
+                if (len > 240) len = 240;
+                ble_audio_send_lc3(&data[offset], len);
+                offset += len;
             }
         }
     }

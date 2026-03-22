@@ -17,7 +17,7 @@ class DongleConnection {
   String? _deviceId;
   String? _deviceName;
   StreamSubscription<ConnectionStateUpdate>? _connectionSub;
-  StreamSubscription<Uint8List>? _l2capSub;
+  StreamSubscription<List<int>>? _l2capSub;
   int _mtu = 23;
   int _rawPacketCount = 0;
   int _totalBytesReceived = 0;
@@ -25,17 +25,23 @@ class DongleConnection {
   bool _captureEnabled = true;
   PowerMode _powerMode = PowerMode.balanced;
 
-  /// Duplicate-frame tracking: last processed seq_num
+  /// PCM accumulator — BLE notifications come in 240-byte chunks,
+  /// accumulate into full frames for the pipeline.
+  final _pcmAccum = BytesBuilder(copy: false);
   int _lastSeqNum = -1;
 
   final _stateController = StreamController<DongleState>.broadcast();
   final _lc3Controller = StreamController<Lc3Packet>.broadcast();
+  final _pcmController = StreamController<Int16List>.broadcast();
 
   /// Connection state stream.
   Stream<DongleState> get stateStream => _stateController.stream;
 
   /// Parsed LC3 packet stream (after deduplication).
   Stream<Lc3Packet> get lc3Stream => _lc3Controller.stream;
+
+  /// Raw PCM frame stream (accumulated from BLE notification chunks).
+  Stream<Int16List> get pcmStream => _pcmController.stream;
 
   int get mtu => _mtu;
   int get rawPacketCount => _rawPacketCount;
@@ -136,86 +142,49 @@ class DongleConnection {
 
     _stateController.add(DongleState.connected);
 
-    // Subscribe to L2CAP audio stream BEFORE connecting
-    // (EventChannel onListen must fire before the read thread starts)
-    _l2capSub = _bleManager.l2capAudioStream.listen(
-      (data) => _processL2capPacket(data),
-      onError: (Object error) {
-        _lastError = 'L2CAP stream err: $error';
-      },
-    );
-
-    // Now connect L2CAP CoC for audio streaming
+    // Subscribe to GATT audio notifications — raw PCM chunks
     try {
-      await _bleManager.connectL2cap(_deviceId!);
-      _lastError = '$_lastError | L2CAP OK';
+      _l2capSub = _bleManager.subscribeToAudio(_deviceId!).listen(
+        (List<int> data) => _processRawPcm(data),
+        onError: (Object error) {
+          _lastError = 'Audio stream err: $error';
+        },
+      );
+      _lastError = '$_lastError | Audio sub OK';
     } catch (e) {
-      _lastError = '$_lastError | L2CAP err: $e';
+      _lastError = '$_lastError | Audio sub err: $e';
     }
   }
 
-  /// Parse L2CAP packet: [seq_num:u16][timestamp:u32][frame_count:u8][frames...]
-  void _processL2capPacket(Uint8List data) {
+  /// Process raw PCM notification chunks — accumulate into full frames.
+  void _processRawPcm(List<int> data) {
     _rawPacketCount++;
     _totalBytesReceived += data.length;
 
-    if (data.length < AudioConstants.packetHeaderSize) return;
+    _pcmAccum.add(Uint8List.fromList(data));
 
-    final byteData = ByteData.sublistView(data);
-    final seqNum = byteData.getUint16(0, Endian.little);
-    final timestamp = byteData.getUint32(2, Endian.little);
-    final frameCount = data[6];
+    // Emit complete frames (960 stereo samples = 1920 bytes)
+    while (_pcmAccum.length >= AudioConstants.frameBytes) {
+      final bytes = _pcmAccum.takeBytes();
+      final frameBytes = Uint8List.sublistView(bytes, 0, AudioConstants.frameBytes);
+      final pcmFrame = frameBytes.buffer.asInt16List(
+          frameBytes.offsetInBytes, AudioConstants.frameSamples);
+      _pcmController.add(pcmFrame);
 
-    // Extract LC3 frames from payload
-    int offset = AudioConstants.packetHeaderSize;
-    final frames = <Uint8List>[];
-
-    for (int i = 0; i < frameCount && offset < data.length; i++) {
-      // Determine frame size: check if remaining data suggests stereo or mono
-      int frameSize;
-      final remaining = data.length - offset;
-
-      if (frameCount == 2) {
-        // Duplicate-frame mode: prev + current, split evenly
-        frameSize = (data.length - AudioConstants.packetHeaderSize) ~/ 2;
-      } else if (remaining >= AudioConstants.lc3StereoFrameBytes) {
-        frameSize = AudioConstants.lc3StereoFrameBytes;
-      } else {
-        frameSize = remaining;
+      // Put remaining bytes back
+      if (bytes.length > AudioConstants.frameBytes) {
+        _pcmAccum.add(Uint8List.sublistView(bytes, AudioConstants.frameBytes));
       }
-
-      if (offset + frameSize > data.length) break;
-      frames.add(Uint8List.sublistView(data, offset, offset + frameSize));
-      offset += frameSize;
     }
-
-    if (frames.isEmpty) return;
-
-    // With duplicate-frame resilience: packet carries [prev_frame, current_frame]
-    // Only emit the latest frame (last one), skip if we already processed this seq
-    final latestFrame = frames.last;
-    final isMono = latestFrame.length <= AudioConstants.lc3MonoFrameBytes;
-
-    // Deduplication: skip if we've already seen this sequence number
-    if (seqNum <= _lastSeqNum && _lastSeqNum - seqNum < 1000) {
-      return;
-    }
-    _lastSeqNum = seqNum;
-
-    _lc3Controller.add(Lc3Packet(
-      seqNum: seqNum,
-      timestamp: timestamp,
-      lc3Data: latestFrame,
-      isMono: isMono,
-    ));
   }
+
+  // LC3 packet parser removed — using raw PCM over GATT
 
   void disconnect() {
     _l2capSub?.cancel();
     _l2capSub = null;
     _connectionSub?.cancel();
     _connectionSub = null;
-    _bleManager.disconnectL2cap();
     _stateController.add(DongleState.disconnected);
   }
 

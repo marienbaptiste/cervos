@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
@@ -30,7 +31,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   bool _pipelineInitialized = false;
   bool _spectroEnabled = true;
 
-  StreamSubscription<Lc3Packet>? _audioSub;
+  StreamSubscription<Int16List>? _audioSub;
   StreamSubscription<SpectrogramUpdate>? _spectrumSub;
   StreamSubscription<double>? _levelSub;
 
@@ -150,8 +151,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     final connection = ref.read(dongleConnectionProvider);
 
-    _audioSub = connection.lc3Stream.listen((Lc3Packet packet) {
-      pipeline.onLc3Packet(packet);
+    _audioSub = connection.pcmStream.listen((Int16List pcmFrame) {
+      pipeline.onPcmFrame(pcmFrame);
     });
 
     _spectrumSub = pipeline.spectrumStream.listen((update) {
