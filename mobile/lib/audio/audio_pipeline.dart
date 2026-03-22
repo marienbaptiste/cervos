@@ -41,16 +41,19 @@ class AudioPipeline {
     await _player.flush();
   }
 
+  int _frameCount = 0;
+
   /// Process one LC3 frame — synchronous decode via dart:ffi.
   void onLc3Frame(Uint8List lc3Data) {
     final pcmFrame = _lc3Decoder.decode(lc3Data);
     if (pcmFrame == null) return;
-    _processDecodedFrame(pcmFrame);
-  }
+    _frameCount++;
 
-  void _processDecodedFrame(Int16List pcmFrame) {
-    // 1. Spectrogram + level (skip if disabled to save CPU)
-    if (spectroEnabled) {
+    // Always play audio
+    _player.enqueue(pcmFrame);
+
+    // Spectrogram: every 5th frame (20fps) to keep UI thread free for audio
+    if (spectroEnabled && _frameCount % 5 == 0) {
       final spectrum = _spectrogram.process(pcmFrame);
       _spectrumController.add(SpectrogramUpdate(
         spectrum: spectrum,
@@ -60,9 +63,6 @@ class AudioPipeline {
       final level = SpectrogramProcessor.computeRmsDbfs(pcmFrame);
       _levelController.add(level);
     }
-
-    // 2. Play on earbuds via Oboe/AAudio
-    _player.enqueue(pcmFrame);
   }
 
   Future<void> dispose() async {

@@ -50,14 +50,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final pipeline = ref.read(audioPipelineProvider);
-    if (state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       _spectroWasEnabled = pipeline.spectroEnabled;
       pipeline.spectroEnabled = false;
     } else if (state == AppLifecycleState.resumed) {
-      pipeline.spectroEnabled = _spectroWasEnabled;
-      if (_spectroWasEnabled) {
-        setState(() {});
-      }
+      // Delay re-enabling spectrogram to avoid stutter on resume
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (mounted) {
+          pipeline.spectroEnabled = _spectroWasEnabled;
+        }
+      });
     }
   }
 
