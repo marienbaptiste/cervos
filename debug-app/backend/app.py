@@ -1,182 +1,210 @@
 """
-Cervos Debug — FastAPI backend
+Cervos Debug — FastAPI backend (streaming STT)
 
-Routes:
-  POST /api/transcribe      Full pipeline: audio → LC3 sim → whisper → text
-  POST /api/simulate-ble    LC3 pipeline only, returns stats + audio comparison
-  GET  /api/health           Backend + whisper.cpp health
-  PUT  /api/settings         Update whisper URL at runtime
-  GET  /                     Serves static frontend
+Endpoints:
+  WS   /ws/stream          Real-time: PCM chunks in → transcription text out
+  POST /api/transcribe      Batch: upload file → transcription (kept for testing)
+  GET  /api/health          Health check
+  GET  /                    Static frontend
 """
 
 import os
+import sys
 import time
-import base64
+import json
+import asyncio
+import logging
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-import httpx
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, Query
+from fastapi import FastAPI, File, UploadFile, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.websockets import WebSocketState
 
 from audio_utils import load_audio, resample, pcm_to_wav_bytes
 from lc3_pipeline import lc3_encode_decode_pipeline, ble_packet_hex_sample
+from streaming_stt import StreamingSTT
 
-app = FastAPI(title="Cervos Debug — Whisper STT")
+logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+logger = logging.getLogger("cervos-debug")
 
-# Runtime settings (WHISPER_URL from env, fallback to docker-compose service name)
-settings = {
-    "whisper_url": os.environ.get("WHISPER_URL", "http://whisper-cpp:8080"),
-}
+app = FastAPI(title="Cervos Debug — Streaming STT")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Model config from environment
+MODEL_SIZE = os.environ.get("WHISPER_MODEL", "large-v3")
+DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
+COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "float16")
+
+# Thread pool for blocking STT calls
+_executor = ThreadPoolExecutor(max_workers=2)
+
+# Model instance — loaded at startup
+_stt_engine: StreamingSTT | None = None
+
+
+@app.on_event("startup")
+async def startup_load_model():
+    """Load model at startup so WebSocket connections don't have to wait."""
+    global _stt_engine
+    loop = asyncio.get_event_loop()
+    logger.info(f"Pre-loading model '{MODEL_SIZE}' on {DEVICE}...")
+    _stt_engine = await loop.run_in_executor(
+        _executor,
+        lambda: StreamingSTT(model_size=MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE),
+    )
+    logger.info("Model ready")
+
+
+def get_stt() -> StreamingSTT:
+    return _stt_engine
 
 
 # ── Health ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 async def health():
-    whisper_ok = False
-    whisper_err = None
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{settings['whisper_url']}/health")
-            whisper_ok = r.status_code == 200
-    except Exception as e:
-        whisper_err = str(e)
-
     return {
         "backend": "ok",
-        "whisper_url": settings["whisper_url"],
-        "whisper_reachable": whisper_ok,
-        "whisper_error": whisper_err,
+        "engine": "faster-whisper",
+        "model": MODEL_SIZE,
+        "device": DEVICE,
+        "model_loaded": _stt_engine is not None,
     }
 
 
-# ── Settings ────────────────────────────────────────────────────────────────
+# ── WebSocket streaming STT ────────────────────────────────────────────────
 
-@app.put("/api/settings")
-async def update_settings(body: dict):
-    if "whisper_url" in body:
-        settings["whisper_url"] = body["whisper_url"].rstrip("/")
-    return {"settings": settings}
+@app.websocket("/ws/stream")
+async def ws_stream(ws: WebSocket):
+    await ws.accept()
+    logger.info("WebSocket connected")
+
+    # Load model in thread to avoid blocking event loop
+    loop = asyncio.get_event_loop()
+    stt = await loop.run_in_executor(_executor, get_stt)
+
+    if stt is None:
+        await ws.send_json({"error": "Model still loading, try again"})
+        await ws.close()
+        return
+
+    stt.reset()
+    simulate_ble = False
+
+    try:
+        while True:
+            msg = await ws.receive()
+
+            if "text" in msg:
+                try:
+                    ctrl = json.loads(msg["text"])
+                except json.JSONDecodeError:
+                    continue
+
+                action = ctrl.get("action", "")
+                if action == "flush":
+                    result = await loop.run_in_executor(_executor, stt.flush)
+                    if result:
+                        await ws.send_json(result)
+                elif action == "reset":
+                    stt.reset()
+                    await ws.send_json({"status": "reset"})
+                elif action == "config":
+                    simulate_ble = ctrl.get("simulate_ble", False)
+                    await ws.send_json({"status": "configured", "simulate_ble": simulate_ble})
+                continue
+
+            if "bytes" in msg:
+                raw = msg["bytes"]
+                if len(raw) == 0:
+                    continue
+
+                # Detect format: float32 or int16
+                if len(raw) % 4 == 0:
+                    pcm = np.frombuffer(raw, dtype=np.float32).copy()
+                else:
+                    pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+                # Optional BLE pipeline simulation
+                if simulate_ble and len(pcm) > 0:
+                    pcm_24k = resample(pcm, 16000, 24000)
+                    lc3_result = lc3_encode_decode_pipeline(pcm_24k)
+                    pcm = resample(lc3_result["decoded_pcm"], 24000, 16000)
+
+                # Feed to STT in thread (transcribe is blocking)
+                results = await loop.run_in_executor(_executor, stt.add_audio, pcm)
+                for result in results:
+                    result["simulate_ble"] = simulate_ble
+                    logger.info(f"Transcription: {result['text'][:80]}... ({result['latency_ms']}ms)")
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_json(result)
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected")
+    except RuntimeError as e:
+        if "disconnect" in str(e).lower():
+            logger.info("WebSocket disconnected (runtime)")
+        else:
+            logger.error(f"WebSocket error: {e}")
+    finally:
+        stt.reset()
 
 
-# ── Transcribe ──────────────────────────────────────────────────────────────
+# ── Batch transcribe (file upload) ─────────────────────────────────────────
 
 @app.post("/api/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
-    simulate_ble: bool = Query(True),
-    diarize: bool = Query(True),
+    simulate_ble: bool = Query(False),
 ):
     t_start = time.perf_counter()
     raw_bytes = await file.read()
 
-    # Load and normalize to float32 mono
     pcm, sr = load_audio(raw_bytes, file.filename or "audio.wav")
 
     pipeline_info = {
         "original_sample_rate": sr,
         "original_duration_s": round(len(pcm) / sr, 3),
-        "original_samples": len(pcm),
         "simulate_ble": simulate_ble,
     }
 
     if simulate_ble:
-        # Resample to 24kHz (firmware rate) → LC3 encode/decode → back to PCM
         pcm_24k = resample(pcm, sr, 24000)
         lc3_result = lc3_encode_decode_pipeline(pcm_24k)
-        decoded_pcm = lc3_result["decoded_pcm"]
-
-        pipeline_info.update({
-            "lc3_frames_encoded": lc3_result["frame_count"],
-            "lc3_frame_bytes": 60,
-            "total_lc3_bytes": lc3_result["total_encoded_bytes"],
-            "compression_ratio": round(lc3_result["compression_ratio"], 2),
-            "ble_packets_simulated": lc3_result["frame_count"],
-        })
-
-        # Resample decoded 24kHz → 16kHz for whisper
-        pcm_16k = resample(decoded_pcm, 24000, 16000)
+        pcm_16k = resample(lc3_result["decoded_pcm"], 24000, 16000)
+        pipeline_info["compression_ratio"] = round(lc3_result["compression_ratio"], 2)
     else:
-        # Direct resample to 16kHz
         pcm_16k = resample(pcm, sr, 16000)
 
-    # Convert to 16-bit WAV for whisper.cpp /inference endpoint
-    wav_bytes = pcm_to_wav_bytes(pcm_16k, 16000)
+    loop = asyncio.get_event_loop()
+    stt = await loop.run_in_executor(_executor, get_stt)
+    if stt is None:
+        return JSONResponse(status_code=503, content={"error": "Model loading"})
 
-    # Send to whisper.cpp
-    t_whisper_start = time.perf_counter()
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            files_payload = {"file": ("audio.wav", wav_bytes, "audio/wav")}
-            data_payload = {
-                "response_format": "json",
-                "temperature": "0.0",
-            }
-            if diarize:
-                data_payload["tdrz"] = "true"
+    t_stt = time.perf_counter()
 
-            r = await client.post(
-                f"{settings['whisper_url']}/inference",
-                files=files_payload,
-                data=data_payload,
-            )
-            r.raise_for_status()
-            whisper_result = r.json()
-    except Exception as e:
-        return JSONResponse(status_code=502, content={
-            "error": f"whisper.cpp request failed: {e}",
-            "pipeline_info": pipeline_info,
-        })
+    def do_transcribe():
+        segments_iter, info = stt.model.transcribe(pcm_16k, beam_size=1, vad_filter=True)
+        segs = []
+        texts = []
+        for seg in segments_iter:
+            segs.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()})
+            texts.append(seg.text.strip())
+        return segs, texts, info
 
-    t_end = time.perf_counter()
+    segs, texts, info = await loop.run_in_executor(_executor, do_transcribe)
 
     pipeline_info.update({
-        "whisper_processing_ms": round((t_end - t_whisper_start) * 1000),
-        "total_pipeline_ms": round((t_end - t_start) * 1000),
+        "language": info.language,
+        "stt_ms": round((time.perf_counter() - t_stt) * 1000),
+        "total_ms": round((time.perf_counter() - t_start) * 1000),
     })
 
-    return {
-        "text": whisper_result.get("text", ""),
-        "segments": whisper_result.get("segments", []),
-        "pipeline_info": pipeline_info,
-    }
-
-
-# ── BLE Simulation Only ────────────────────────────────────────────────────
-
-@app.post("/api/simulate-ble")
-async def simulate_ble_only(file: UploadFile = File(...)):
-    raw_bytes = await file.read()
-    pcm, sr = load_audio(raw_bytes, file.filename or "audio.wav")
-
-    # Resample to 24kHz
-    pcm_24k = resample(pcm, sr, 24000)
-
-    # LC3 encode/decode
-    lc3_result = lc3_encode_decode_pipeline(pcm_24k)
-    decoded_pcm = lc3_result["decoded_pcm"]
-
-    # Generate WAV bytes for before/after comparison
-    original_wav = pcm_to_wav_bytes(pcm_24k, 24000)
-    decoded_wav = pcm_to_wav_bytes(decoded_pcm, 24000)
-
-    # Sample BLE packet hex dump (first 3 packets)
-    packet_hex = ble_packet_hex_sample(lc3_result["encoded_frames"], count=3)
-
-    return {
-        "frame_count": lc3_result["frame_count"],
-        "lc3_frame_bytes": 60,
-        "total_encoded_bytes": lc3_result["total_encoded_bytes"],
-        "compression_ratio": round(lc3_result["compression_ratio"], 2),
-        "original_pcm_bytes": len(pcm_24k) * 2,
-        "ble_packet_samples": packet_hex,
-        "original_audio_b64": base64.b64encode(original_wav).decode(),
-        "decoded_audio_b64": base64.b64encode(decoded_wav).decode(),
-    }
+    return {"text": " ".join(texts), "segments": segs, "pipeline_info": pipeline_info}
 
 
 # ── Static frontend ────────────────────────────────────────────────────────

@@ -1,23 +1,21 @@
-# Cervos Debug — Backend (FastAPI + liblc3)
-# Handles audio processing, LC3 BLE simulation, and whisper.cpp proxy.
+# Cervos Debug — Backend (faster-whisper + CUDA + LC3)
+# Single container: FastAPI + WebSocket streaming STT + LC3 BLE simulation
 
-FROM python:3.12-slim
+FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
 
-# Build deps for liblc3 Python bindings (meson build system)
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential meson ninja-build git pkg-config \
+    python3 python3-pip python3-dev \
+    build-essential git pkg-config \
+    libcublas-12-6 libcudnn9-cuda-12 \
     && rm -rf /var/lib/apt/lists/*
-
-# Install liblc3 Python bindings from source
-RUN git clone --depth 1 https://github.com/google/liblc3.git /tmp/liblc3 \
-    && cd /tmp/liblc3 \
-    && pip install --no-cache-dir . \
-    && rm -rf /tmp/liblc3
 
 WORKDIR /app
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir  -r requirements.txt
 
 # Copy backend source
 COPY backend/*.py ./
@@ -27,4 +25,4 @@ COPY frontend/ ./static/
 
 EXPOSE 8090
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090"]
+CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8090"]

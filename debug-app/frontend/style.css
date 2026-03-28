@@ -360,6 +360,69 @@ input[type="text"]:focus {
 
 .hidden { display: none; }
 
+/* Live text (streaming current utterance) */
+.live-text {
+  background: var(--level-2);
+  border-left: 3px solid var(--primary);
+  border-radius: 0 6px 6px 0;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  font-size: 16px;
+  line-height: 1.6;
+  min-height: 24px;
+  animation: fadeIn 0.2s;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Stats bar */
+.stats-bar {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-disabled);
+  padding: 4px 0 8px;
+}
+
+/* Transcripts list */
+.transcripts-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.transcript-entry {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--level-0);
+  animation: slideIn 0.2s;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.transcript-text {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.transcript-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.meta-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-disabled);
+  background: var(--level-0);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
 /* Error message */
 .error-msg {
   background: rgba(234, 67, 53, 0.1);

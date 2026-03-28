@@ -1,12 +1,15 @@
 services:
-  whisper-cpp:
+  debug-app:
     build:
-      context: ./whisper
-      args:
-        MODEL: large-v3
-    container_name: cervos-whisper-cpp
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cervos-debug-app
     ports:
-      - "8081:8080"
+      - "8090:8090"
+    environment:
+      - WHISPER_MODEL=large-v3
+      - WHISPER_DEVICE=auto
+      - WHISPER_COMPUTE_TYPE=float16
     deploy:
       resources:
         reservations:
@@ -14,17 +17,9 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    volumes:
+      - model-cache:/root/.cache/huggingface
     restart: unless-stopped
 
-  debug-backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    container_name: cervos-debug-backend
-    ports:
-      - "8090:8090"
-    environment:
-      - WHISPER_URL=http://whisper-cpp:8080
-    depends_on:
-      - whisper-cpp
-    restart: unless-stopped
+volumes:
+  model-cache:
