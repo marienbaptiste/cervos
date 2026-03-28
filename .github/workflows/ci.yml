@@ -62,5 +62,5 @@ jobs:
       - name: Check firmware sources exist
         run: |
           test -f firmware/src/usb_audio_capture.c
-          test -f firmware/src/ble_audio_stream.c
+          test -f firmware/src/ble_l2cap_stream.c
           test -f firmware/src/ble_sniffer.c
