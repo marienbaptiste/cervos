@@ -4,8 +4,7 @@ import 'package:flutter_pcm_sound/flutter_pcm_sound.dart';
 
 import '../core/constants.dart';
 
-/// Plays raw PCM audio frames on the phone speaker / BLE earbuds.
-/// 48kHz stereo, 16-bit, 10ms frames.
+/// Simple PCM player — direct push, no buffering layer.
 class PcmPlayer {
   bool _initialized = false;
 
@@ -33,7 +32,6 @@ class PcmPlayer {
     FlutterPcmSound.feed(PcmArrayInt16.fromList(pcmFrame.toList()));
   }
 
-  /// Clear playback buffer (call on reconnect to avoid stale audio).
   Future<void> flush() async {
     if (!_initialized) return;
     await FlutterPcmSound.clear();
