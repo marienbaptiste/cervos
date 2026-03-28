@@ -211,20 +211,28 @@ function addTranscript(data) {
   const lang = data.language ? `[${data.language}]` : '';
   const latency = data.latency_ms ? `${data.latency_ms}ms` : '';
   const duration = data.audio_duration_s ? `${data.audio_duration_s}s` : '';
+  const diarize = data.diarize_ms ? `diarize ${data.diarize_ms}ms` : '';
+  const stt = data.transcribe_ms ? `stt ${data.transcribe_ms}ms` : '';
+
+  // Format text with speaker labels highlighted
+  const formattedText = escapeHtml(data.text)
+    .replace(/\[SPEAKER_(\d+)\]/g, '<span class="speaker-label">Speaker $1</span>');
 
   div.innerHTML = `
-    <div class="transcript-text">${escapeHtml(data.text)}</div>
+    <div class="transcript-text">${formattedText}</div>
     <div class="transcript-meta">
       <span class="meta-tag">${lang}</span>
-      <span class="meta-tag">${latency}</span>
+      <span class="meta-tag">${stt}</span>
+      ${diarize ? `<span class="meta-tag">${diarize}</span>` : ''}
       <span class="meta-tag">${duration} audio</span>
+      <span class="meta-tag">total ${latency}</span>
     </div>
   `;
   els.transcripts.prepend(div);
 
   // Update stats bar
   if (data.latency_ms) {
-    els.statsBar.textContent = `Last: ${latency} inference · ${duration} audio · ${lang}`;
+    els.statsBar.textContent = `Last: ${stt} + ${diarize || 'no diarize'} = ${latency} total · ${duration} audio · ${lang}`;
   }
 }
 

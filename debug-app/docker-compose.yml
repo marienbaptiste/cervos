@@ -6,6 +6,7 @@ services:
     container_name: cervos-debug-app
     ports:
       - "8090:8090"
+    env_file: .env
     environment:
       - WHISPER_MODEL=large-v3
       - WHISPER_DEVICE=auto
