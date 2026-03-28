@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cervos Debug — Whisper STT</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+
+    <!-- Header -->
+    <header>
+      <h1>Cervos Debug — Whisper STT</h1>
+      <div style="display:flex;align-items:center;">
+        <span class="status-dot pending" id="status-dot"></span>
+        <span id="status-text" style="font-size:13px;color:var(--text-secondary);">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Settings -->
+    <section>
+      <h2>Settings</h2>
+      <div style="margin-bottom:12px;">
+        <label for="whisper-url">Whisper URL</label>
+        <div style="display:flex;gap:8px;margin-top:4px;">
+          <input type="text" id="whisper-url" value="http://whisper-cpp:8080"
+                 placeholder="http://host:port">
+          <button class="btn btn-secondary" id="url-save">Save</button>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="ble-sim" checked>
+          <span class="slider"></span>
+        </label>
+        <span>Simulate BLE pipeline (LC3 encode/decode)</span>
+      </div>
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="diarize" checked>
+          <span class="slider"></span>
+        </label>
+        <span>Speaker diarization (tinydiarize)</span>
+      </div>
+    </section>
+
+    <!-- Audio Input -->
+    <section>
+      <h2>Audio Input</h2>
+      <div class="audio-controls">
+        <div style="text-align:center;">
+          <button class="btn btn-record" id="record-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="12" r="8"/>
+            </svg>
+          </button>
+          <div id="record-label" style="font-size:11px;margin-top:4px;color:var(--text-secondary);">Record</div>
+        </div>
+
+        <canvas id="vu-meter" class="hidden" width="200" height="16"
+                style="border-radius:4px;align-self:center;"></canvas>
+
+        <div style="color:var(--text-disabled);font-size:13px;">or</div>
+
+        <div class="file-upload" style="flex:1;">
+          <div class="drop-zone" id="drop-zone">
+            <div style="margin-bottom:4px;">Drop audio file here or click to browse</div>
+            <div style="font-size:12px;">WAV, WebM, OGG</div>
+            <input type="file" id="file-input" accept="audio/*">
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;">
+        <span id="file-name" style="font-size:13px;color:var(--text-secondary);">No file selected</span>
+        <button class="btn btn-primary" id="transcribe-btn" disabled>
+          <span id="spinner" class="spinner hidden" style="margin-right:8px;vertical-align:middle;"></span>
+          Transcribe
+        </button>
+      </div>
+    </section>
+
+    <!-- Error -->
+    <div id="error-msg" class="error-msg hidden"></div>
+
+    <!-- Results -->
+    <section id="result-section" class="hidden">
+      <h2>Pipeline</h2>
+      <div class="pipeline-steps" id="pipeline-viz"></div>
+
+      <h2 style="margin-top:16px;">Stats</h2>
+      <div class="stats-grid" id="stats-grid"></div>
+
+      <h2 style="margin-top:16px;">Transcription</h2>
+      <div class="result-text" id="result-text"></div>
+
+      <div class="segments-list" id="segments-list"></div>
+    </section>
+
+    <!-- BLE Details (shown when BLE sim is on) -->
+    <section id="ble-section" class="hidden">
+      <h2>BLE Packet Samples</h2>
+      <div class="hex-dump" id="hex-dump"></div>
+
+      <h2 style="margin-top:16px;">Audio Comparison (pre/post LC3)</h2>
+      <div class="audio-compare hidden" id="audio-compare">
+        <div>
+          <label>Original (24kHz)</label>
+          <audio controls id="audio-original"></audio>
+        </div>
+        <div>
+          <label>After LC3 decode</label>
+          <audio controls id="audio-decoded"></audio>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

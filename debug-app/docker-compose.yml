@@ -1,0 +1,30 @@
+services:
+  whisper-cpp:
+    build:
+      context: ./whisper
+      args:
+        MODEL: large-v3
+    container_name: cervos-whisper-cpp
+    ports:
+      - "8081:8080"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  debug-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cervos-debug-backend
+    ports:
+      - "8090:8090"
+    environment:
+      - WHISPER_URL=http://whisper-cpp:8080
+    depends_on:
+      - whisper-cpp
+    restart: unless-stopped
