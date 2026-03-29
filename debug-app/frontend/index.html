@@ -89,6 +89,29 @@
       </div>
     </section>
 
+    <!-- Diarization tuning -->
+    <section>
+      <h2>Diarization</h2>
+      <div class="diarize-controls">
+        <div class="slider-row">
+          <label for="similarity-threshold">Speaker match threshold</label>
+          <input type="range" id="similarity-threshold" min="0.3" max="0.85" step="0.05" value="0.55">
+          <span id="similarity-value" class="slider-value">0.55</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-disabled);margin:-4px 0 8px 0;">
+          Higher = stricter matching, fewer new speakers created
+        </div>
+        <div class="slider-row">
+          <label for="min-speech">Min speech (s)</label>
+          <input type="range" id="min-speech" min="0.3" max="2.0" step="0.1" value="0.5">
+          <span id="min-speech-value" class="slider-value">0.5</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-disabled);margin:-4px 0 0 0;">
+          Min seconds of speech per speaker before extracting embedding
+        </div>
+      </div>
+    </section>
+
     <!-- Speaker profiles -->
     <section>
       <h2>Speaker Profiles <span id="speaker-count" class="meta-tag" style="margin-left:8px;"></span></h2>

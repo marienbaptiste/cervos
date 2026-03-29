@@ -28,26 +28,49 @@ class SpeakerStore:
     - Names are optional and assigned separately
     """
 
-    def __init__(self, persist_dir: str = "/app/data/chroma"):
+    CONFIRM_COUNT = 3       # require N consistent non-matching embeddings before creating new speaker
+    PENDING_SIMILARITY = 0.7  # pending embeddings must be this similar to each other
+
+    def __init__(self, persist_dir: str = "/app/data/chroma", expected_dim: int = 192):
         logger.info(f"Initializing speaker store at {persist_dir}")
+        self.similarity_threshold = SIMILARITY_THRESHOLD
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection = self.client.get_or_create_collection(
             name=COLLECTION_NAME,
             metadata={"hnsw:space": "cosine"},
         )
+
+        # Check if existing embeddings have wrong dimension (model change)
+        if self.collection.count() > 0:
+            sample = self.collection.peek(limit=1)
+            if sample["embeddings"] is not None and len(sample["embeddings"]) > 0 and len(sample["embeddings"][0]) != expected_dim:
+                old_dim = len(sample["embeddings"][0])
+                logger.warning(f"Embedding dimension changed ({old_dim} → {expected_dim}), clearing speaker profiles")
+                self.client.delete_collection(COLLECTION_NAME)
+                self.collection = self.client.get_or_create_collection(
+                    name=COLLECTION_NAME,
+                    metadata={"hnsw:space": "cosine"},
+                )
+
+        # Pending buffer for new-speaker confirmation
+        self._pending_embeddings = []  # list of embeddings that didn't match
+        self._pending_count = 0
+
         count = self.collection.count()
-        logger.info(f"Speaker store ready: {count} profiles")
+        logger.info(f"Speaker store ready: {count} profiles (dim={expected_dim})")
 
     def match_or_create(self, embedding: np.ndarray) -> tuple[str, bool]:
         """
         Find the closest matching speaker or create a new profile.
+        New speakers require CONFIRM_COUNT consistent non-matching embeddings.
 
         Returns (speaker_id, is_new).
         """
         embedding_list = embedding.tolist()
 
-        # If collection is empty, create first profile
+        # If collection is empty, first speaker — create immediately
         if self.collection.count() == 0:
+            self._reset_pending()
             return self._create_profile(embedding_list), True
 
         # Query nearest neighbor
@@ -58,6 +81,7 @@ class SpeakerStore:
         )
 
         if not results["ids"][0]:
+            self._reset_pending()
             return self._create_profile(embedding_list), True
 
         # Chroma cosine distance = 1 - cosine_similarity
@@ -65,15 +89,57 @@ class SpeakerStore:
         similarity = 1.0 - distance
         existing_id = results["ids"][0][0]
 
-        logger.info(f"Nearest speaker: {existing_id}, similarity: {similarity:.3f} (threshold: {SIMILARITY_THRESHOLD})")
+        logger.info(f"Nearest speaker: {existing_id}, similarity: {similarity:.3f} (threshold: {self.similarity_threshold})")
 
-        if similarity >= SIMILARITY_THRESHOLD:
-            # Match found — update profile with new sample
+        if similarity >= self.similarity_threshold:
+            # Match found — update profile and reset pending
             self._update_profile(existing_id, embedding_list, results)
+            self._reset_pending()
             return existing_id, False
+
+        # No match — don't create immediately, buffer for confirmation
+        if self._pending_count == 0:
+            # First non-match: start pending buffer, return closest existing (tentative)
+            self._pending_embeddings = [embedding]
+            self._pending_count = 1
+            logger.info(f"Pending new speaker (1/{self.CONFIRM_COUNT}), tentatively using {existing_id}")
+            return existing_id, False
+
+        # Check if this embedding is consistent with pending buffer
+        pending_avg = np.mean(self._pending_embeddings, axis=0)
+        pending_norm = np.linalg.norm(pending_avg)
+        if pending_norm > 0:
+            pending_avg = pending_avg / pending_norm
+        pending_sim = np.dot(embedding, pending_avg)
+
+        if pending_sim >= self.PENDING_SIMILARITY:
+            # Consistent with pending — accumulate
+            self._pending_embeddings.append(embedding)
+            self._pending_count += 1
+            logger.info(f"Pending new speaker ({self._pending_count}/{self.CONFIRM_COUNT}), "
+                        f"pending_sim: {pending_sim:.3f}")
+
+            if self._pending_count >= self.CONFIRM_COUNT:
+                # Confirmed new speaker — create from average of pending embeddings
+                avg_emb = np.mean(self._pending_embeddings, axis=0)
+                avg_norm = np.linalg.norm(avg_emb)
+                if avg_norm > 0:
+                    avg_emb = avg_emb / avg_norm
+                self._reset_pending()
+                return self._create_profile(avg_emb.tolist()), True
+            else:
+                # Not yet confirmed, return closest existing
+                return existing_id, False
         else:
-            # No match — new speaker
-            return self._create_profile(embedding_list), True
+            # Inconsistent with pending — reset buffer, start fresh
+            logger.info(f"Pending reset (inconsistent: {pending_sim:.3f})")
+            self._pending_embeddings = [embedding]
+            self._pending_count = 1
+            return existing_id, False
+
+    def _reset_pending(self):
+        self._pending_embeddings = []
+        self._pending_count = 0
 
     def _create_profile(self, embedding_list: list[float]) -> str:
         """Create a new speaker profile with a unique ID."""

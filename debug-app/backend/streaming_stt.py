@@ -94,7 +94,8 @@ class SpeakerDiarizer:
     WINDOW_S = 5.0       # sliding window duration
     STEP_S = 0.5         # step size
     TAU_ACTIVE = 0.5     # speaker activation threshold
-    MIN_SPEECH_S = 0.5   # minimum speech per speaker to extract embedding
+    MIN_SPEECH_S = 1.0   # minimum speech per speaker to extract embedding
+    EMBED_INTERVAL = 10  # only extract embeddings every N steps (N * 0.5s = 5s)
 
     def __init__(self, device: str, hf_token: str, speaker_store: SpeakerStore):
         self.ready = False
@@ -102,6 +103,8 @@ class SpeakerDiarizer:
         self._lock = threading.Lock()
         self._new_samples = 0
         self._time_offset = 0.0
+        self._step_count = 0
+        self._cached_speakers = {}  # local spk_idx → {speaker_id, speaker_name}
 
         window_samples = int(self.WINDOW_S * SAMPLE_RATE)
         self._step_samples = int(self.STEP_S * SAMPLE_RATE)
@@ -129,15 +132,11 @@ class SpeakerDiarizer:
 
             # Compute frame resolution from model introspection
             specs = self._seg_model.specifications
-            # segmentation-3.0: powerset with max_speakers_per_chunk=3, max_speakers_per_frame=2
-            # Output is (batch, frames, num_powerset_classes)
-            # We need the Powerset converter to go from powerset → multilabel
             from pyannote.audio.utils.powerset import Powerset
             powerset = Powerset(
                 len(specs.classes),
                 specs.powerset_max_classes,
             )
-            # Move mapping tensor to same device as model to avoid CPU/CUDA mismatch
             powerset.mapping = powerset.mapping.to(dev)
             self._to_multilabel = powerset.to_multilabel
 
@@ -147,22 +146,24 @@ class SpeakerDiarizer:
                 dummy_out = self._seg_model(dummy)
             num_frames = dummy_out.shape[1]
             self._frame_step_s = self.WINDOW_S / num_frames
-            # Multilabel output tells us how many speakers the model can track per chunk
             dummy_ml = self._to_multilabel(dummy_out)
             self._max_speakers = dummy_ml.shape[2]
             logger.info(f"Segmentation model loaded: {num_frames} frames for {self.WINDOW_S}s "
                         f"(~{self._frame_step_s*1000:.1f}ms/frame), max {self._max_speakers} speakers")
 
-            # --- Embedding model ---
-            logger.info("Loading pyannote/wespeaker-voxceleb-resnet34-LM...")
-            self._emb_model = Model.from_pretrained(
-                "pyannote/wespeaker-voxceleb-resnet34-LM",
-                use_auth_token=hf_token,
-            ).to(dev).eval()
-            logger.info("Embedding model loaded (256-dim)")
+            # --- Embedding model: SpeechBrain ECAPA-TDNN (192-dim) ---
+            from speechbrain.inference.speaker import EncoderClassifier
+            logger.info("Loading speechbrain/spkrec-ecapa-voxceleb...")
+            self._emb_model = EncoderClassifier.from_hparams(
+                source="speechbrain/spkrec-ecapa-voxceleb",
+                savedir="/root/.cache/huggingface/speechbrain_emb",
+                run_opts={"device": str(dev)},
+            )
+            logger.info("Embedding model loaded (ECAPA-TDNN, 192-dim)")
 
             self.ready = True
-            logger.info(f"SpeakerDiarizer ready (device={dev}, window={self.WINDOW_S}s, step={self.STEP_S}s)")
+            logger.info(f"SpeakerDiarizer ready (device={dev}, window={self.WINDOW_S}s, "
+                        f"step={self.STEP_S}s, embed every {self.EMBED_INTERVAL} steps)")
 
         except Exception as e:
             logger.warning(f"SpeakerDiarizer not available: {e}", exc_info=True)
@@ -199,8 +200,10 @@ class SpeakerDiarizer:
             return None
 
     def _process_window(self, pcm: np.ndarray) -> list[dict] | None:
-        """Run segmentation → embedding → Chroma match on one window."""
+        """Run segmentation every step, embedding + Chroma only every EMBED_INTERVAL steps."""
         torch = self._torch
+        self._step_count += 1
+        do_embed = (self._step_count % self.EMBED_INTERVAL == 0)
 
         # Step 1: Segmentation — (1, 1, samples) → (1, frames, powerset_classes)
         waveform = torch.from_numpy(pcm).unsqueeze(0).unsqueeze(0).to(self._device)
@@ -233,40 +236,44 @@ class SpeakerDiarizer:
             if not regions:
                 continue
 
-            # Step 4: Extract masked audio for embedding
-            # Upsample frame mask to sample rate
-            samples_per_frame = len(pcm) / num_frames
-            sample_mask = np.repeat(spk_mask, int(np.ceil(samples_per_frame)))[:len(pcm)]
-            speaker_audio = pcm * sample_mask.astype(np.float32)
+            # Embedding extraction: only every EMBED_INTERVAL steps
+            if do_embed:
+                samples_per_frame = len(pcm) / num_frames
+                best_region = max(regions, key=lambda r: r[1] - r[0])
+                reg_start_sample = int((best_region[0] - window_start) / self._frame_step_s * samples_per_frame)
+                reg_end_sample = int((best_region[1] - window_start) / self._frame_step_s * samples_per_frame)
+                reg_start_sample = max(0, reg_start_sample)
+                reg_end_sample = min(len(pcm), reg_end_sample)
+                speaker_audio = pcm[reg_start_sample:reg_end_sample]
 
-            # Only keep non-silent parts (concatenate active regions)
-            active_samples = speaker_audio[sample_mask]
-            if len(active_samples) < SAMPLE_RATE * 0.3:  # need at least 300ms of actual audio
-                continue
+                if len(speaker_audio) >= SAMPLE_RATE * 0.5:  # need at least 500ms
+                    # SpeechBrain ECAPA-TDNN embedding
+                    wav_tensor = torch.from_numpy(speaker_audio).unsqueeze(0).to(self._device)
+                    with torch.no_grad():
+                        embedding = self._emb_model.encode_batch(wav_tensor)
+                    emb_np = embedding.squeeze().cpu().numpy()
+                    norm = np.linalg.norm(emb_np)
+                    if norm > 0:
+                        emb_np = emb_np / norm
 
-            # Run embedding model
-            emb_input = torch.from_numpy(active_samples).unsqueeze(0).unsqueeze(0).to(self._device)
-            with torch.no_grad():
-                embedding = self._emb_model(emb_input)
+                    speaker_id, is_new = self.speaker_store.match_or_create(emb_np)
+                    profile = self.speaker_store.get_profile(speaker_id)
+                    speaker_name = profile.get("name") if profile else None
+                    self._cached_speakers[spk_idx] = {
+                        "speaker_id": speaker_id,
+                        "speaker_name": speaker_name,
+                    }
 
-            emb_np = embedding.cpu().numpy().flatten()
-            # Normalize to unit vector
-            norm = np.linalg.norm(emb_np)
-            if norm > 0:
-                emb_np = emb_np / norm
-
-            # Step 5: Match against Chroma speaker store
-            speaker_id, is_new = self.speaker_store.match_or_create(emb_np)
-            profile = self.speaker_store.get_profile(speaker_id)
-            speaker_name = profile.get("name") if profile else None
-
-            for region in regions:
-                turns.append({
-                    "start": round(region[0], 3),
-                    "end": round(region[1], 3),
-                    "speaker_id": speaker_id,
-                    "speaker_name": speaker_name,
-                })
+            # Use cached speaker ID (from this or previous embedding extraction)
+            cached = self._cached_speakers.get(spk_idx)
+            if cached:
+                for region in regions:
+                    turns.append({
+                        "start": round(region[0], 3),
+                        "end": round(region[1], 3),
+                        "speaker_id": cached["speaker_id"],
+                        "speaker_name": cached["speaker_name"],
+                    })
 
         return turns if turns else None
 
@@ -298,6 +305,8 @@ class SpeakerDiarizer:
             self._ring.clear()
             self._new_samples = 0
             self._time_offset = 0.0
+            self._step_count = 0
+            self._cached_speakers = {}
 
 
 class StreamingSTT:

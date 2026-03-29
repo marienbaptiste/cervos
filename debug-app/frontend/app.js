@@ -44,10 +44,25 @@ document.addEventListener('DOMContentLoaded', () => {
   els.speakerCount = $('speaker-count');
   els.refreshSpeakers = $('refresh-speakers');
 
+  els.simThreshold  = $('similarity-threshold');
+  els.simValue      = $('similarity-value');
+  els.minSpeech     = $('min-speech');
+  els.minSpeechVal  = $('min-speech-value');
+
   els.streamBtn.addEventListener('click', toggleStream);
   els.clearBtn.addEventListener('click', clearTranscripts);
   els.refreshSpeakers.addEventListener('click', loadSpeakers);
   els.streamHint = $('stream-hint');
+
+  // Diarization sliders — update display + send to backend live
+  els.simThreshold.addEventListener('input', () => {
+    els.simValue.textContent = els.simThreshold.value;
+  });
+  els.simThreshold.addEventListener('change', sendDiarizeConfig);
+  els.minSpeech.addEventListener('input', () => {
+    els.minSpeechVal.textContent = els.minSpeech.value;
+  });
+  els.minSpeech.addEventListener('change', sendDiarizeConfig);
   els.deviceSelect = $('device-select');
   els.dropZone.addEventListener('click', () => els.fileInput.click());
   els.fileInput.addEventListener('change', handleFileSelect);
@@ -69,6 +84,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   checkHealth();
   loadSpeakers();
+  loadDiarizeConfig();
   enumerateAudioDevices();
 });
 
@@ -678,6 +694,36 @@ function formatSize(bytes) {
 
 
 // ── Speaker Profiles ──────────────────────────────────────────────────────
+
+async function loadDiarizeConfig() {
+  try {
+    const r = await fetch('/api/diarize-config');
+    const data = await r.json();
+    if (data.similarity_threshold != null) {
+      els.simThreshold.value = data.similarity_threshold;
+      els.simValue.textContent = data.similarity_threshold;
+    }
+    if (data.min_speech_s != null) {
+      els.minSpeech.value = data.min_speech_s;
+      els.minSpeechVal.textContent = data.min_speech_s;
+    }
+  } catch { /* backend not ready */ }
+}
+
+async function sendDiarizeConfig() {
+  const config = {
+    similarity_threshold: parseFloat(els.simThreshold.value),
+    min_speech_s: parseFloat(els.minSpeech.value),
+  };
+  // Send via REST (works whether streaming or not)
+  try {
+    await fetch('/api/diarize-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+  } catch { /* backend not ready */ }
+}
 
 async function loadSpeakers() {
   try {

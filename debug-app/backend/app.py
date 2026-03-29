@@ -254,6 +254,38 @@ async def transcribe(
     return {"text": " ".join(texts), "segments": segs, "pipeline_info": pipeline_info}
 
 
+# ── Diarization config ─────────────────────────────────────────────────────
+
+@app.put("/api/diarize-config")
+async def update_diarize_config(body: dict):
+    stt = get_stt()
+    if stt is None:
+        return JSONResponse(status_code=503, content={"error": "Model loading"})
+    if "similarity_threshold" in body:
+        val = float(body["similarity_threshold"])
+        stt.speaker_store.similarity_threshold = max(0.2, min(0.95, val))
+        logger.info(f"Speaker similarity threshold → {stt.speaker_store.similarity_threshold}")
+    if "min_speech_s" in body:
+        val = float(body["min_speech_s"])
+        stt.diarizer.MIN_SPEECH_S = max(0.2, min(3.0, val))
+        logger.info(f"Min speech duration → {stt.diarizer.MIN_SPEECH_S}s")
+    return {
+        "similarity_threshold": stt.speaker_store.similarity_threshold,
+        "min_speech_s": stt.diarizer.MIN_SPEECH_S,
+    }
+
+
+@app.get("/api/diarize-config")
+async def get_diarize_config():
+    stt = get_stt()
+    if stt is None:
+        return JSONResponse(status_code=503, content={"error": "Model loading"})
+    return {
+        "similarity_threshold": stt.speaker_store.similarity_threshold,
+        "min_speech_s": stt.diarizer.MIN_SPEECH_S,
+    }
+
+
 # ── Speaker profiles ────────────────────────────────────────────────────────
 
 @app.get("/api/speakers")

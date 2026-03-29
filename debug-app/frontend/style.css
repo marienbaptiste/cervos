@@ -149,6 +149,36 @@ input[type="text"]:focus {
 .toggle input:checked + .slider { background: var(--primary); }
 .toggle input:checked + .slider::before { transform: translateX(18px); }
 
+/* Diarization controls */
+.diarize-controls {
+  background: var(--level-1);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.slider-row label {
+  font-size: 13px;
+  min-width: 170px;
+  color: var(--text-secondary);
+}
+.slider-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--primary);
+  height: 4px;
+}
+.slider-value {
+  font-size: 13px;
+  font-family: monospace;
+  color: var(--text-primary);
+  min-width: 36px;
+  text-align: right;
+}
+
 /* Buttons */
 .btn {
   padding: 10px 20px;
