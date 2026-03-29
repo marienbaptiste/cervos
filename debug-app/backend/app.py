@@ -85,10 +85,10 @@ async def ws_stream(ws: WebSocket):
         await ws.close()
         return
 
-    # Create a WhisperLive client for this connection
     loop = asyncio.get_event_loop()
-    client = await loop.run_in_executor(_executor, stt.create_client)
+    client = None
     simulate_ble = False
+    language = None
     alive = True
 
     # Audio accumulator for diarization — keeps raw PCM alongside timestamps
@@ -97,52 +97,71 @@ async def ws_stream(ws: WebSocket):
     diarize_offset = 0.0  # seconds of audio already diarized and discarded
     pending_diarize: set[asyncio.Task] = set()
 
+    total_audio_s = 0.0
+    diarize_trim_s = 0.0
+    last_diarize_time = 0.0
+    diarize_running = False
+    DIARIZE_INTERVAL_S = 10.0  # only run diarization every 10s
+    DIARIZE_MIN_AUDIO_S = 5.0  # need at least 5s of audio
+
     def append_diarize_audio(pcm: np.ndarray):
-        """Thread-safe append to diarization buffer (called from main loop)."""
-        nonlocal diarize_audio
+        nonlocal diarize_audio, total_audio_s, diarize_trim_s
         diarize_audio = np.concatenate([diarize_audio, pcm])
-        # Cap at 60s to prevent unbounded growth
+        total_audio_s += len(pcm) / 16000
         max_samples = 60 * 16000
         if len(diarize_audio) > max_samples:
             trim = len(diarize_audio) - max_samples
+            diarize_trim_s += trim / 16000
             diarize_audio = diarize_audio[trim:]
 
-    async def diarize_completed_segments(segments: list[dict]):
-        """Run diarization on completed segments in background, send speaker update."""
-        nonlocal diarize_audio
-        if not stt.diarize_pipeline or not segments:
+    async def run_diarization():
+        """Transcribe + diarize our own audio buffer, send full attributed transcript."""
+        nonlocal diarize_running
+        if not stt.diarize_pipeline:
             return
-
-        # Snapshot audio
         audio = diarize_audio.copy()
-        if len(audio) < 16000:  # need at least 1s
+        buf_s = len(audio) / 16000
+        if buf_s < DIARIZE_MIN_AUDIO_S:
             return
 
+        diarize_running = True
         try:
-            enriched = await loop.run_in_executor(
-                _executor, stt.diarize, audio, segments
+            # Limit to last 15s — pyannote on CPU needs to finish within ~5s
+            max_samples = 15 * 16000
+            if len(audio) > max_samples:
+                audio = audio[-max_samples:]
+            buf_s = len(audio) / 16000
+            logger.info(f"Running diarization on {buf_s:.1f}s of audio...")
+            result = await loop.run_in_executor(
+                _executor, stt.transcribe_and_diarize, audio
             )
-            # Send speaker enrichment update to browser
-            if ws.client_state == WebSocketState.CONNECTED:
+            if result and ws.client_state == WebSocketState.CONNECTED:
+                speakers = set(s.get("speaker_id") for s in result if s.get("speaker_id"))
+                logger.info(f"Diarized: {len(result)} segments, {len(speakers)} speakers")
                 await ws.send_json({
-                    "type": "speaker_update",
-                    "segments": enriched,
+                    "type": "diarized_transcript",
+                    "segments": result,
                 })
         except Exception as e:
             logger.warning(f"Diarization failed: {e}")
+        finally:
+            diarize_running = False
 
-    def fire_diarize(segments):
-        task = asyncio.create_task(diarize_completed_segments(segments))
+    def fire_diarize():
+        task = asyncio.create_task(run_diarization())
         pending_diarize.add(task)
         task.add_done_callback(pending_diarize.discard)
 
     # Poller: reads WhisperLive output queue and forwards to browser
     async def poll_results():
+        nonlocal last_diarize_time, diarize_running
         while alive:
             await asyncio.sleep(0.1)  # 100ms poll
             if not alive:
                 break
             try:
+                if client is None:
+                    continue
                 messages = client.get_messages()
                 for msg in messages:
                     if ws.client_state != WebSocketState.CONNECTED:
@@ -160,10 +179,14 @@ async def ws_stream(ws: WebSocket):
                             "partial": not all(s.get("completed", False) for s in segments),
                         })
 
-                        # Fire async diarization for completed segments
-                        completed = [s for s in segments if s.get("completed")]
-                        if completed:
-                            fire_diarize(completed)
+                        # Fire diarization periodically (not on every segment)
+                        now = time.perf_counter()
+                        buf_s = len(diarize_audio) / 16000
+                        if (not diarize_running
+                                and buf_s >= DIARIZE_MIN_AUDIO_S
+                                and now - last_diarize_time >= DIARIZE_INTERVAL_S):
+                            last_diarize_time = now
+                            fire_diarize()
 
                     elif "message" in msg:
                         if msg["message"] == "SERVER_READY":
@@ -191,6 +214,12 @@ async def ws_stream(ws: WebSocket):
                     await ws.send_json({"status": "reset"})
                 elif action == "config":
                     simulate_ble = ctrl.get("simulate_ble", False)
+                    language = ctrl.get("language")  # null = auto-detect
+                    # Create WhisperLive client now that we know the language
+                    if client is None:
+                        client = await loop.run_in_executor(
+                            _executor, lambda: stt.create_client(language=language))
+                        logger.info(f"Client created, language={language or 'auto'}")
                     await ws.send_json({"status": "configured", "simulate_ble": simulate_ble})
                 elif action == "flush":
                     # WhisperLive handles flushing internally
@@ -215,7 +244,8 @@ async def ws_stream(ws: WebSocket):
                     pcm = resample(lc3_result["decoded_pcm"], 24000, 16000)
 
                 # Feed audio to WhisperLive — non-blocking (just appends to buffer)
-                client.add_frames(pcm)
+                if client:
+                    client.add_frames(pcm)
                 # Also accumulate for diarization
                 append_diarize_audio(pcm)
 
@@ -231,7 +261,8 @@ async def ws_stream(ws: WebSocket):
         poll_task.cancel()
         for task in list(pending_diarize):
             task.cancel()
-        client.cleanup()
+        if client:
+            client.cleanup()
 
 
 # ── Batch transcribe (file upload) ─────────────────────────────────────────
@@ -278,7 +309,8 @@ async def transcribe(
         for seg in segments_iter:
             segs.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()})
             texts.append(seg.text.strip())
-        client.cleanup()
+        if client:
+            client.cleanup()
         return segs, texts, info
 
     segs, texts, info = await loop.run_in_executor(_executor, do_transcribe)

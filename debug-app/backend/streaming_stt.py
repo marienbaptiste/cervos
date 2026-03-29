@@ -53,6 +53,12 @@ class StreamingSTT:
         self.compute_type = compute_type
         self._fw_client_class = None
 
+        # Load faster-whisper model for diarization transcription pass
+        from faster_whisper import WhisperModel
+        logger.info(f"Loading faster-whisper '{model_size}' for diarization...")
+        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        logger.info("Whisper model loaded")
+
         # Load WhisperLive backend
         logger.info("Importing WhisperLive ServeClientFasterWhisper...")
         try:
@@ -112,6 +118,92 @@ class StreamingSTT:
 
     # ── Diarization ───────────────────────────────────────────────────────
 
+    def transcribe_and_diarize(self, audio: np.ndarray) -> list[dict]:
+        """Transcribe + diarize the same audio. Timestamps always aligned. Blocking."""
+        import torch
+
+        # Transcribe
+        segments_iter, info = self.model.transcribe(
+            audio, beam_size=1, language=None, vad_filter=True,
+            vad_parameters=dict(min_speech_duration_ms=250, min_silence_duration_ms=200),
+        )
+        segments = []
+        for seg in segments_iter:
+            segments.append({
+                "start": round(seg.start, 3),
+                "end": round(seg.end, 3),
+                "text": seg.text.strip(),
+                "speaker_id": None,
+                "speaker_name": None,
+            })
+        if not segments:
+            return []
+
+        # Diarize the same audio
+        if self.diarize_pipeline:
+            waveform = torch.from_numpy(audio).unsqueeze(0).float()
+            result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+            raw_turns = [(t.start, t.end, s) for t, _, s in result.itertracks(yield_label=True)]
+
+            if raw_turns:
+                # Map labels to persistent IDs
+                label_map = {}
+                for label in set(s for _, _, s in raw_turns):
+                    emb = self._extract_embedding(audio, raw_turns, label)
+                    if emb is not None:
+                        sid, _ = self.speaker_store.match_or_create(emb)
+                        label_map[label] = sid
+
+                # Assign speaker to each segment by best overlap
+                for seg in segments:
+                    best_label, best_ov = None, 0.0
+                    for ts, te, label in raw_turns:
+                        ov = max(0, min(seg["end"], te) - max(seg["start"], ts))
+                        if ov > best_ov:
+                            best_ov, best_label = ov, label
+                    if best_label and best_label in label_map:
+                        sid = label_map[best_label]
+                        seg["speaker_id"] = sid
+                        profile = self.speaker_store.get_profile(sid)
+                        if profile and profile.get("name"):
+                            seg["speaker_name"] = profile["name"]
+
+        return segments
+
+    def get_speaker_turns(self, audio: np.ndarray) -> list[dict]:
+        """Run pyannote diarization on audio, return speaker turns with persistent IDs."""
+        if not self.diarize_pipeline:
+            return []
+
+        import torch
+        waveform = torch.from_numpy(audio).unsqueeze(0).float()
+        result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+        raw_turns = [(t.start, t.end, s) for t, _, s in result.itertracks(yield_label=True)]
+        if not raw_turns:
+            return []
+
+        # Map pyannote labels to persistent speaker IDs
+        label_map = {}
+        for label in set(s for _, _, s in raw_turns):
+            emb = self._extract_embedding(audio, raw_turns, label)
+            if emb is not None:
+                sid, _ = self.speaker_store.match_or_create(emb)
+                label_map[label] = sid
+
+        turns = []
+        for start, end, label in raw_turns:
+            sid = label_map.get(label)
+            if sid:
+                profile = self.speaker_store.get_profile(sid)
+                name = profile.get("name") if profile else None
+                turns.append({
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "speaker_id": sid,
+                    "speaker_name": name,
+                })
+        return turns
+
     def diarize(self, audio: np.ndarray, segments: list[dict]) -> list[dict]:
         """Run pyannote diarization + speaker ID on audio. Blocking."""
         if not self.diarize_pipeline or len(segments) == 0:
@@ -120,7 +212,7 @@ class StreamingSTT:
         import torch
         waveform = torch.from_numpy(audio).unsqueeze(0).float()
         result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
-        turns = [(t.start, t.end, s) for t, _, s in result.speaker_diarization.itertracks(yield_label=True)]
+        turns = [(t.start, t.end, s) for t, _, s in result.itertracks(yield_label=True)]
         if not turns:
             return segments
 

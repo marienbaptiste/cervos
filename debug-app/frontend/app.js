@@ -16,6 +16,9 @@ let vuAnimFrame = null;
 let isStreaming = false;
 let transcripts = [];
 let shownSegments = new Set();
+let allSegments = {};    // keyed by start time — the full transcript
+let speakerMap = {};     // start time → { id, name }
+let speakerTurns = [];   // raw diarization timeline from backend
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
 
@@ -203,44 +206,40 @@ async function startStream() {
     ws.send(JSON.stringify({
       action: 'config',
       simulate_ble: els.bleSim.checked,
+      language: $('lang-select').value || null,
     }));
 
     ws.onmessage = e => {
       const data = JSON.parse(e.data);
+      console.log('WS msg:', JSON.stringify(data).slice(0, 200));
 
-      // Speaker enrichment update — arrives after text, adds speaker labels
-      if (data.type === 'speaker_update' && data.segments) {
-        updateSpeakerLabels(data.segments);
+      // Diarized transcript — replaces transcript with speaker-attributed version
+      if (data.type === 'diarized_transcript' && data.segments) {
+        // Replace speakerMap from the properly aligned diarization
+        speakerMap = {};
+        for (const seg of data.segments) {
+          if (seg.speaker_id) {
+            speakerMap[seg.start] = { id: seg.speaker_id, name: seg.speaker_name };
+          }
+          // Also update allSegments with diarized versions (matched timestamps)
+          allSegments[seg.start] = { ...seg, completed: true };
+        }
+        renderTranscript();
         loadSpeakers();
         return;
       }
 
-      // WhisperLive format: { segments: [{start, end, text, completed}, ...] }
-      if (data.segments && data.segments.length > 0) {
-        const completed = data.segments.filter(s => s.completed);
-        const pending = data.segments.filter(s => !s.completed);
-
-        // Show completed segments as final transcripts (text first, speaker labels come later)
-        for (const seg of completed) {
-          const key = `${seg.start}-${seg.text}`;
-          if (!shownSegments.has(key)) {
-            shownSegments.add(key);
-            addTranscript({
-              text: seg.text,
-              segments: [seg],
-              language: data.language,
-              _segKey: key,  // used to find and update with speaker labels later
-            });
-          }
+      // WhisperLive segment update
+      const segments = data.segments;
+      if (segments && segments.length > 0) {
+        // Remove old pending segments — only keep completed ones + fresh pending
+        for (const key of Object.keys(allSegments)) {
+          if (!allSegments[key].completed) delete allSegments[key];
         }
-
-        // Show pending (incomplete) segments as live text
-        if (pending.length > 0) {
-          els.liveText.textContent = pending.map(s => s.text).join(' ');
-          els.liveText.classList.remove('hidden');
-        } else {
-          els.liveText.textContent = '';
+        for (const seg of segments) {
+          allSegments[seg.start] = seg;
         }
+        renderTranscript();
       }
     };
 
@@ -404,29 +403,135 @@ function addTranscript(data) {
 function clearTranscripts() {
   transcripts = [];
   shownSegments = new Set();
+  allSegments = {};
+  speakerMap = {};
   els.transcripts.innerHTML = '';
+  els.liveText.textContent = '';
+  els.liveText.classList.add('hidden');
   els.statsBar.textContent = '';
 }
 
-function updateSpeakerLabels(segments) {
-  // Enrich existing transcript entries with speaker labels from diarization
-  for (const seg of segments) {
-    const sid = seg.speaker_id;
-    const name = seg.speaker_name;
-    if (!sid) continue;
+function renderTranscript() {
+  // Sort segments by start time
+  const sorted = Object.values(allSegments)
+    .sort((a, b) => parseFloat(a.start) - parseFloat(b.start));
 
-    const label = name || sid.slice(0, 12);
-    const key = `${seg.start}-${seg.text}`;
+  if (sorted.length === 0) return;
 
-    // Find the DOM entry by segKey
-    const entry = els.transcripts.querySelector(`[data-seg-key="${CSS.escape(key)}"]`);
-    if (entry) {
-      const tag = entry.querySelector('.speaker-tag');
-      if (tag) {
-        tag.innerHTML = `<span class="speaker-label clickable" onclick="promptRenameSpeaker('${sid}', this)">${escapeHtml(label)}</span> `;
-        tag.classList.add('visible');
-      }
+  // Split into completed and pending
+  const completed = sorted.filter(s => s.completed);
+  const pending = sorted.filter(s => !s.completed);
+
+  // Show only truly new pending text (not yet in any completed segment)
+  const completedTexts = new Set(completed.map(s => s.text.trim()));
+  const newPending = pending.filter(s => !completedTexts.has(s.text.trim()));
+  if (newPending.length > 0) {
+    els.liveText.textContent = newPending.map(s => s.text).join(' ');
+    els.liveText.classList.remove('hidden');
+  } else {
+    els.liveText.textContent = '';
+    els.liveText.classList.add('hidden');
+  }
+
+  // Build grouped transcript — merge consecutive segments from same speaker
+  const groups = [];
+  let currentGroup = null;
+
+  for (const seg of completed) {
+    const speaker = speakerMap[seg.start];
+    const speakerId = speaker?.id || null;
+
+    if (currentGroup && speakerId !== null && currentGroup.speakerId === speakerId) {
+      // Same known speaker — append to current group
+      currentGroup.texts.push(seg.text);
+      currentGroup.end = seg.end;
+    } else {
+      // New speaker or first segment
+      currentGroup = {
+        speakerId,
+        speakerName: speaker?.name || null,
+        texts: [seg.text],
+        start: seg.start,
+        end: seg.end,
+      };
+      groups.push(currentGroup);
     }
+  }
+
+  // Build new HTML and only update if changed (prevents blinking)
+  let html = '';
+  for (const group of groups) {
+    const label = group.speakerName || (group.speakerId ? group.speakerId.slice(0, 12) : null);
+    const labelHtml = label
+      ? `<div class="speaker-tag visible"><span class="speaker-label clickable" onclick="promptRenameSpeaker('${group.speakerId}', this)">${escapeHtml(label)}</span></div>`
+      : '';
+
+    html += `<div class="transcript-entry">
+      ${labelHtml}
+      <div class="transcript-text">${escapeHtml(group.texts.join(' '))}</div>
+    </div>`;
+  }
+
+  // Skip DOM updates if user is interacting with an input (e.g. renaming a speaker)
+  const activeEl = document.activeElement;
+  if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.isContentEditable) &&
+      els.transcripts.contains(activeEl)) {
+    return;
+  }
+
+  const wasAtBottom = els.transcripts.scrollHeight - els.transcripts.scrollTop - els.transcripts.clientHeight < 50;
+  const existing = els.transcripts.children;
+  const hadGroups = existing.length;
+
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+    const label = group.speakerName || (group.speakerId ? group.speakerId.slice(0, 12) : null);
+    const text = group.texts.join(' ');
+
+    if (i < existing.length) {
+      // Update existing entry — only touch what changed
+      const entry = existing[i];
+      const textEl = entry.querySelector('.transcript-text');
+      if (textEl && textEl.textContent !== text) {
+        textEl.textContent = text;
+      }
+      // Update speaker label
+      const tagEl = entry.querySelector('.speaker-tag');
+      if (label) {
+        if (!tagEl) {
+          const tag = document.createElement('div');
+          tag.className = 'speaker-tag visible';
+          tag.innerHTML = `<span class="speaker-label clickable" onclick="promptRenameSpeaker('${group.speakerId}', this)">${escapeHtml(label)}</span>`;
+          entry.insertBefore(tag, entry.firstChild);
+        } else if (tagEl.textContent !== label) {
+          tagEl.innerHTML = `<span class="speaker-label clickable" onclick="promptRenameSpeaker('${group.speakerId}', this)">${escapeHtml(label)}</span>`;
+          tagEl.classList.add('visible');
+        }
+      }
+    } else {
+      // New group — append
+      const entry = document.createElement('div');
+      entry.className = 'transcript-entry';
+      if (label) {
+        const tag = document.createElement('div');
+        tag.className = 'speaker-tag visible';
+        tag.innerHTML = `<span class="speaker-label clickable" onclick="promptRenameSpeaker('${group.speakerId}', this)">${escapeHtml(label)}</span>`;
+        entry.appendChild(tag);
+      }
+      const textEl = document.createElement('div');
+      textEl.className = 'transcript-text';
+      textEl.textContent = text;
+      entry.appendChild(textEl);
+      els.transcripts.appendChild(entry);
+    }
+  }
+  // Remove extras
+  while (els.transcripts.children.length > groups.length) {
+    els.transcripts.removeChild(els.transcripts.lastChild);
+  }
+
+  if (wasAtBottom || hadGroups === 0) {
+    els.transcripts.scrollTop = els.transcripts.scrollHeight;
   }
 }
 
