@@ -1,0 +1,178 @@
+"""
+Cervos Debug — Speaker profile store (Chroma-backed)
+
+Stores voice fingerprints (speaker embeddings) in a Chroma collection.
+Each unique voice gets a persistent UUID that survives across sessions.
+Names are assigned later (by user or LLM at summarization time).
+"""
+
+import uuid
+import logging
+from datetime import datetime, timezone
+
+import numpy as np
+import chromadb
+
+logger = logging.getLogger("cervos-debug")
+
+COLLECTION_NAME = "speaker_profiles"
+SIMILARITY_THRESHOLD = 0.35  # cosine similarity — low for short audio chunks; tune up for longer segments
+
+
+class SpeakerStore:
+    """
+    Persistent speaker profile store backed by Chroma.
+
+    - match_or_create(embedding) → speaker_id
+    - Automatically refines centroid embeddings with each new sample
+    - Names are optional and assigned separately
+    """
+
+    def __init__(self, persist_dir: str = "/app/data/chroma"):
+        logger.info(f"Initializing speaker store at {persist_dir}")
+        self.client = chromadb.PersistentClient(path=persist_dir)
+        self.collection = self.client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        count = self.collection.count()
+        logger.info(f"Speaker store ready: {count} profiles")
+
+    def match_or_create(self, embedding: np.ndarray) -> tuple[str, bool]:
+        """
+        Find the closest matching speaker or create a new profile.
+
+        Returns (speaker_id, is_new).
+        """
+        embedding_list = embedding.tolist()
+
+        # If collection is empty, create first profile
+        if self.collection.count() == 0:
+            return self._create_profile(embedding_list), True
+
+        # Query nearest neighbor
+        results = self.collection.query(
+            query_embeddings=[embedding_list],
+            n_results=1,
+            include=["metadatas", "distances", "embeddings"],
+        )
+
+        if not results["ids"][0]:
+            return self._create_profile(embedding_list), True
+
+        # Chroma cosine distance = 1 - cosine_similarity
+        distance = results["distances"][0][0]
+        similarity = 1.0 - distance
+        existing_id = results["ids"][0][0]
+
+        logger.info(f"Nearest speaker: {existing_id}, similarity: {similarity:.3f} (threshold: {SIMILARITY_THRESHOLD})")
+
+        if similarity >= SIMILARITY_THRESHOLD:
+            # Match found — update profile with new sample
+            self._update_profile(existing_id, embedding_list, results)
+            return existing_id, False
+        else:
+            # No match — new speaker
+            return self._create_profile(embedding_list), True
+
+    def _create_profile(self, embedding_list: list[float]) -> str:
+        """Create a new speaker profile with a unique ID."""
+        speaker_id = f"spk_{uuid.uuid4().hex[:8]}"
+        now = datetime.now(timezone.utc).isoformat()
+
+        self.collection.add(
+            ids=[speaker_id],
+            embeddings=[embedding_list],
+            metadatas=[{
+                "name": "",
+                "sample_count": 1,
+                "first_seen": now,
+                "last_seen": now,
+            }],
+        )
+        logger.info(f"New speaker profile: {speaker_id}")
+        return speaker_id
+
+    def _update_profile(self, speaker_id: str, new_embedding: list[float],
+                        query_results: dict) -> None:
+        """Refine the centroid embedding with a new sample (running average)."""
+        meta = query_results["metadatas"][0][0]
+        old_embedding = query_results["embeddings"][0][0]
+        sample_count = int(meta.get("sample_count", 1))
+
+        # Running average: new_centroid = (old * n + new) / (n + 1)
+        new_count = sample_count + 1
+        centroid = [
+            (old * sample_count + new) / new_count
+            for old, new in zip(old_embedding, new_embedding)
+        ]
+
+        # Normalize to unit vector (cosine similarity expects this)
+        norm = sum(x * x for x in centroid) ** 0.5
+        if norm > 0:
+            centroid = [x / norm for x in centroid]
+
+        now = datetime.now(timezone.utc).isoformat()
+        meta["sample_count"] = new_count
+        meta["last_seen"] = now
+
+        self.collection.update(
+            ids=[speaker_id],
+            embeddings=[centroid],
+            metadatas=[meta],
+        )
+
+    def set_name(self, speaker_id: str, name: str) -> bool:
+        """Assign a name to a speaker profile."""
+        try:
+            result = self.collection.get(ids=[speaker_id], include=["metadatas"])
+            if not result["ids"]:
+                return False
+            meta = result["metadatas"][0]
+            meta["name"] = name
+            self.collection.update(ids=[speaker_id], metadatas=[meta])
+            logger.info(f"Named speaker {speaker_id} → {name}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to name speaker: {e}")
+            return False
+
+    def delete_profile(self, speaker_id: str) -> bool:
+        """Delete a speaker profile."""
+        try:
+            self.collection.delete(ids=[speaker_id])
+            logger.info(f"Deleted speaker {speaker_id}")
+            return True
+        except Exception:
+            return False
+
+    def get_all_profiles(self) -> list[dict]:
+        """Return all speaker profiles (for UI and LLM context)."""
+        if self.collection.count() == 0:
+            return []
+
+        results = self.collection.get(include=["metadatas"])
+        profiles = []
+        for id_, meta in zip(results["ids"], results["metadatas"]):
+            profiles.append({
+                "id": id_,
+                "name": meta.get("name", "") or None,
+                "sample_count": int(meta.get("sample_count", 0)),
+                "first_seen": meta.get("first_seen"),
+                "last_seen": meta.get("last_seen"),
+            })
+        return profiles
+
+    def get_profile(self, speaker_id: str) -> dict | None:
+        """Get a single speaker profile."""
+        result = self.collection.get(ids=[speaker_id], include=["metadatas"])
+        if not result["ids"]:
+            return None
+        meta = result["metadatas"][0]
+        return {
+            "id": speaker_id,
+            "name": meta.get("name", "") or None,
+            "sample_count": int(meta.get("sample_count", 0)),
+            "first_seen": meta.get("first_seen"),
+            "last_seen": meta.get("last_seen"),
+        }

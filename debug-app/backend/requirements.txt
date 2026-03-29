@@ -2,8 +2,9 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 websockets==14.2
 python-multipart==0.0.20
-numpy==2.2.3
+numpy<2
 scipy==1.15.2
-faster-whisper==1.1.1
+whisper-live
 pyannote-audio>=3.1
+chromadb>=0.6.0
 requests

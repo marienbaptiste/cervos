@@ -1,230 +1,201 @@
 """
-Cervos Debug — Streaming STT engine (faster-whisper + pyannote diarization)
+Cervos Debug — Streaming STT powered by WhisperLive + pyannote speaker ID
 
-Accumulates PCM audio chunks and transcribes when speech is detected.
-Runs pyannote speaker diarization on transcribed segments.
-All in-memory, no files.
+Uses WhisperLive's battle-tested ServeClientFasterWhisper for real-time
+streaming transcription. Adds pyannote diarization + persistent speaker
+profiles on top.
 """
 
 import os
+import json
 import time
+import queue
 import logging
+import threading
 import numpy as np
-from faster_whisper import WhisperModel
+
+from speaker_store import SpeakerStore
 
 logger = logging.getLogger("cervos-debug")
-
-# Config
 SAMPLE_RATE = 16000
-MIN_SPEECH_S = 0.5
-MAX_BUFFER_S = 30.0
-SILENCE_THRESHOLD_S = 0.6
-ENERGY_SPEECH_THRESHOLD = 0.01
-ENERGY_SILENCE_THRESHOLD = 0.005
+
+
+class WebSocketAdapter:
+    """
+    Adapts a queue to look like a websocket for WhisperLive's ServeClientFasterWhisper.
+    WhisperLive sends JSON strings via websocket.send() — we capture them in a queue.
+    """
+    def __init__(self):
+        self.outbox = queue.Queue()
+
+    def send(self, data: str):
+        self.outbox.put_nowait(data)
+
+    def close(self):
+        pass
 
 
 class StreamingSTT:
     """
-    Real-time streaming STT with speaker diarization.
+    Real-time streaming STT backed by WhisperLive + pyannote speaker ID.
 
-    Feed PCM chunks via add_audio(), get transcriptions with speaker labels back.
+    Usage:
+        stt = StreamingSTT(...)
+        client = stt.create_client()   # starts WhisperLive transcription thread
+        client.add_frames(pcm_chunk)   # feed audio (float32, 16kHz)
+        msg = client.adapter.outbox.get_nowait()  # get JSON segment messages
+        client.cleanup()               # stop
     """
 
-    def __init__(self, model_size: str = "large-v3", device: str = "auto",
-                 compute_type: str = "float16"):
-        # Load whisper model
-        logger.info(f"Loading faster-whisper model '{model_size}' on {device}...")
-        t0 = time.perf_counter()
-        self.model = WhisperModel(
-            model_size,
-            device=device,
-            compute_type=compute_type,
-        )
-        logger.info(f"Whisper model loaded in {time.perf_counter() - t0:.1f}s")
+    def __init__(self, model_size="large-v3", device="auto", compute_type="float16"):
+        self.model_size = model_size
+        self.device = device
+        self.compute_type = compute_type
+        self._fw_client_class = None
 
-        # Load pyannote diarization pipeline
+        # Load WhisperLive backend
+        logger.info("Importing WhisperLive ServeClientFasterWhisper...")
+        try:
+            from whisper_live.backend.faster_whisper_backend import ServeClientFasterWhisper
+            self._fw_client_class = ServeClientFasterWhisper
+            logger.info("WhisperLive backend loaded")
+        except ImportError as e:
+            logger.error(f"WhisperLive not installed: {e}")
+            raise
+
+        # Load pyannote for diarization
         self.diarize_pipeline = None
+        self._speaker_encoder = None
         hf_token = os.environ.get("HF_TOKEN", "")
         if hf_token and hf_token != "paste_your_token_here":
             try:
-                from pyannote.audio import Pipeline
-                logger.info("Loading pyannote diarization pipeline...")
+                from pyannote.audio import Pipeline, Inference, Model
+                import torch
+                logger.info("Loading pyannote...")
                 t0 = time.perf_counter()
                 self.diarize_pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1",
-                    token=hf_token,
-                )
-                # Keep pyannote on CPU (GPU is for whisper)
-                import torch
+                    "pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
                 self.diarize_pipeline.to(torch.device("cpu"))
+                embedding_model = Model.from_pretrained(
+                    "pyannote/wespeaker-voxceleb-resnet34-LM", use_auth_token=hf_token)
+                self._speaker_encoder = Inference(
+                    embedding_model, window="whole", device=torch.device("cpu"))
                 logger.info(f"Pyannote loaded in {time.perf_counter() - t0:.1f}s")
             except Exception as e:
                 logger.warning(f"Pyannote not available: {e}")
         else:
-            logger.info("No HF_TOKEN set — diarization disabled")
+            logger.info("No HF_TOKEN — diarization disabled")
 
-        self.buffer = np.array([], dtype=np.float32)
-        self.is_speaking = False
-        self.silence_start = 0.0
+        self.speaker_store = SpeakerStore()
 
-    def add_audio(self, pcm_chunk: np.ndarray) -> list[dict]:
-        """
-        Add a PCM chunk (float32, 16kHz mono) and return completed transcriptions.
-        Returns list of dicts with 'text', 'segments', 'speakers', 'latency_ms'.
-        """
-        self.buffer = np.concatenate([self.buffer, pcm_chunk])
-        results = []
+    def create_client(self, language=None) -> "WhisperLiveClient":
+        """Create a new WhisperLive client session. Each WS connection gets one."""
+        adapter = WebSocketAdapter()
 
-        rms = np.sqrt(np.mean(pcm_chunk ** 2)) if len(pcm_chunk) > 0 else 0.0
-        now = time.perf_counter()
-        buffer_duration = len(self.buffer) / SAMPLE_RATE
-
-        if not self.is_speaking:
-            if rms > ENERGY_SPEECH_THRESHOLD:
-                self.is_speaking = True
-                self.silence_start = 0.0
-        else:
-            if rms < ENERGY_SILENCE_THRESHOLD:
-                if self.silence_start == 0.0:
-                    self.silence_start = now
-                elif now - self.silence_start > SILENCE_THRESHOLD_S:
-                    result = self._transcribe()
-                    if result:
-                        results.append(result)
-                    self.is_speaking = False
-                    self.silence_start = 0.0
-            else:
-                self.silence_start = 0.0
-
-        if buffer_duration > MAX_BUFFER_S:
-            result = self._transcribe()
-            if result:
-                results.append(result)
-            self.is_speaking = False
-            self.silence_start = 0.0
-
-        return results
-
-    def _transcribe(self) -> dict | None:
-        """Run faster-whisper + optional pyannote diarization on buffer."""
-        if len(self.buffer) < int(MIN_SPEECH_S * SAMPLE_RATE):
-            self.buffer = np.array([], dtype=np.float32)
-            return None
-
-        audio = self.buffer.copy()
-        self.buffer = np.array([], dtype=np.float32)
-
-        t0 = time.perf_counter()
-
-        # Transcribe
-        segments_iter, info = self.model.transcribe(
-            audio,
-            beam_size=1,
-            language=None,
-            vad_filter=True,
-            vad_parameters=dict(
-                min_speech_duration_ms=250,
-                min_silence_duration_ms=200,
-            ),
+        # Create WhisperLive client — single_model=True shares the model across clients
+        # so clicking Stream doesn't reload the model every time
+        client = self._fw_client_class(
+            websocket=adapter,
+            task="transcribe",
+            language=language,
+            client_uid=f"cervos-{time.time_ns()}",
+            model=self.model_size,
+            use_vad=True,
+            single_model=True,
+            send_last_n_segments=10,
+            no_speech_thresh=0.45,
+            clip_audio=True,
+            same_output_threshold=7,
         )
 
-        segments = []
-        full_text = []
-        for seg in segments_iter:
-            segments.append({
-                "start": round(seg.start, 2),
-                "end": round(seg.end, 2),
-                "text": seg.text.strip(),
-                "speaker": None,
-            })
-            full_text.append(seg.text.strip())
+        return WhisperLiveClient(client, adapter, self)
 
-        transcribe_ms = round((time.perf_counter() - t0) * 1000)
+    # ── Diarization ───────────────────────────────────────────────────────
 
-        text = " ".join(full_text)
-        if not text.strip():
-            return None
+    def diarize(self, audio: np.ndarray, segments: list[dict]) -> list[dict]:
+        """Run pyannote diarization + speaker ID on audio. Blocking."""
+        if not self.diarize_pipeline or len(segments) == 0:
+            return segments
 
-        # Diarize (assign speakers to segments)
-        diarize_ms = 0
-        if self.diarize_pipeline and len(segments) > 0:
-            t1 = time.perf_counter()
-            try:
-                segments = self._assign_speakers(audio, segments)
-            except Exception as e:
-                logger.warning(f"Diarization failed: {e}")
-            diarize_ms = round((time.perf_counter() - t1) * 1000)
-
-        total_ms = round((time.perf_counter() - t0) * 1000)
-
-        # Build display text with speaker labels
-        display_parts = []
-        current_speaker = None
-        for seg in segments:
-            speaker = seg.get("speaker")
-            if speaker and speaker != current_speaker:
-                display_parts.append(f"\n[{speaker}] ")
-                current_speaker = speaker
-            display_parts.append(seg["text"])
-        display_text = " ".join(display_parts).strip()
-
-        return {
-            "text": display_text,
-            "segments": segments,
-            "language": info.language,
-            "language_probability": round(info.language_probability, 2),
-            "audio_duration_s": round(len(audio) / SAMPLE_RATE, 2),
-            "latency_ms": total_ms,
-            "transcribe_ms": transcribe_ms,
-            "diarize_ms": diarize_ms,
-            "diarization": self.diarize_pipeline is not None,
-        }
-
-    def _assign_speakers(self, audio: np.ndarray, segments: list[dict]) -> list[dict]:
-        """Run pyannote on audio and assign speaker labels to segments."""
         import torch
-
-        # pyannote expects a dict with "waveform" and "sample_rate"
         waveform = torch.from_numpy(audio).unsqueeze(0).float()
-        audio_input = {"waveform": waveform, "sample_rate": SAMPLE_RATE}
+        result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+        turns = [(t.start, t.end, s) for t, _, s in result.speaker_diarization.itertracks(yield_label=True)]
+        if not turns:
+            return segments
 
-        result = self.diarize_pipeline(audio_input)
-        diarization = result.speaker_diarization
+        label_map = {}
+        for label in set(s for _, _, s in turns):
+            emb = self._extract_embedding(audio, turns, label)
+            if emb is not None:
+                sid, is_new = self.speaker_store.match_or_create(emb)
+                label_map[label] = sid
 
-        # Build speaker timeline: list of (start, end, speaker)
-        speaker_turns = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            speaker_turns.append((turn.start, turn.end, speaker))
-
-        # Assign speaker to each whisper segment by overlap
         for seg in segments:
-            seg_start = seg["start"]
-            seg_end = seg["end"]
-            best_speaker = None
-            best_overlap = 0.0
-
-            for turn_start, turn_end, speaker in speaker_turns:
-                overlap_start = max(seg_start, turn_start)
-                overlap_end = min(seg_end, turn_end)
-                overlap = max(0, overlap_end - overlap_start)
-                if overlap > best_overlap:
-                    best_overlap = overlap
-                    best_speaker = speaker
-
-            seg["speaker"] = best_speaker
-
+            start = float(seg.get("start", 0))
+            end = float(seg.get("end", 0))
+            best_label, best_ov = None, 0.0
+            for ts, te, label in turns:
+                ov = max(0, min(end, te) - max(start, ts))
+                if ov > best_ov:
+                    best_ov, best_label = ov, label
+            if best_label and best_label in label_map:
+                seg["speaker_id"] = label_map[best_label]
+                profile = self.speaker_store.get_profile(label_map[best_label])
+                if profile and profile.get("name"):
+                    seg["speaker_name"] = profile["name"]
         return segments
 
-    def flush(self) -> dict | None:
-        if len(self.buffer) < int(0.3 * SAMPLE_RATE):
-            self.buffer = np.array([], dtype=np.float32)
+    def _extract_embedding(self, audio, turns, target_label):
+        if not self._speaker_encoder:
             return None
-        result = self._transcribe()
-        self.is_speaking = False
-        self.silence_start = 0.0
-        return result
+        import torch
+        chunks = []
+        for ts, te, label in turns:
+            if label != target_label:
+                continue
+            chunk = audio[int(ts * SAMPLE_RATE):int(te * SAMPLE_RATE)]
+            if len(chunk) > 0:
+                chunks.append(chunk)
+        if not chunks:
+            return None
+        speaker_audio = np.concatenate(chunks)
+        if len(speaker_audio) < int(0.5 * SAMPLE_RATE):
+            return None
+        waveform = torch.from_numpy(speaker_audio).unsqueeze(0).float()
+        emb = self._speaker_encoder({"waveform": waveform, "sample_rate": SAMPLE_RATE})
+        if hasattr(emb, 'numpy'):
+            emb = emb.numpy()
+        emb = np.array(emb).flatten().astype(np.float32)
+        if np.any(np.isnan(emb)) or np.all(emb == 0):
+            return None
+        norm = np.linalg.norm(emb)
+        return emb / norm if norm > 0 else None
 
-    def reset(self):
-        self.buffer = np.array([], dtype=np.float32)
-        self.is_speaking = False
-        self.silence_start = 0.0
+
+class WhisperLiveClient:
+    """Wraps a WhisperLive ServeClientFasterWhisper with our adapter."""
+
+    def __init__(self, wl_client, adapter: WebSocketAdapter, stt: StreamingSTT):
+        self.wl_client = wl_client
+        self.adapter = adapter
+        self.stt = stt
+
+    def add_frames(self, pcm: np.ndarray):
+        """Feed audio to WhisperLive. Float32, 16kHz."""
+        self.wl_client.add_frames(pcm)
+
+    def get_messages(self) -> list[dict]:
+        """Non-blocking: drain all pending messages from WhisperLive."""
+        messages = []
+        while True:
+            try:
+                raw = self.adapter.outbox.get_nowait()
+                msg = json.loads(raw) if isinstance(raw, str) else raw
+                messages.append(msg)
+            except queue.Empty:
+                break
+        return messages
+
+    def cleanup(self):
+        self.wl_client.cleanup()

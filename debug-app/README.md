@@ -1,121 +1,115 @@
-# Cervos Debug — Whisper.cpp STT Tester
+# Cervos Voice Service + Debug Frontend
 
-Cross-platform debug app for testing the Whisper.cpp STT integration end-to-end,
-including the full BLE audio pipeline simulation (LC3 encode/decode).
-
-## Quick start
-
-```bash
-cd debug-app
-docker compose up --build
-```
-
-Open **http://localhost:8090** in any browser.
-
-> First build downloads the `large-v3` model (~3GB) and compiles whisper.cpp
-> from source. This takes a while — subsequent builds use Docker cache.
+Real-time streaming STT with speaker diarization and persistent voice profiles.
 
 ## Architecture
 
 ```
-Browser (mic / WAV file)
-  │
+Browser mic (debug frontend)
+  │  WebSocket (16kHz float32 PCM)
   ▼
-Backend (FastAPI, port 8090)
-  ├─ Resample to 24kHz mono (firmware rate)
-  ├─ LC3 encode → 60-byte frames (matching nRF52840 dongle)
-  ├─ BLE packet framing [seq:u16][ts:u32][count:u8][LC3...]
-  ├─ LC3 decode (simulates phone-side decoding)
-  ├─ Resample to 16kHz mono (whisper input rate)
-  │
-  ▼
-whisper.cpp server (Docker, port 8081)
-  ├─ Transcription
-  ├─ Tinydiarize speaker turns
-  │
-  ▼
-Results → Browser
+cervos-voice-service (Docker, CUDA GPU)
+  ├── faster-whisper: transcription (GPU, large-v3)
+  ├── pyannote: diarization + speaker embeddings (CPU)
+  ├── Speaker store: Chroma DB for persistent voice profiles
+  │   ├── Known speaker (similarity > 0.35) → reuse UUID
+  │   └── Unknown speaker → create new profile
+  └── Returns: named transcript with persistent speaker IDs
 ```
 
-## Services
+## Quick start
 
-| Service | Container | Port | Description |
-|---------|-----------|------|-------------|
-| whisper-cpp | cervos-whisper-cpp | 8081 | whisper.cpp HTTP server with large-v3 + tinydiarize |
-| debug-backend | cervos-debug-backend | 8090 | FastAPI backend + static frontend |
+```bash
+# 1. Set your HuggingFace token (for pyannote models)
+echo "HF_TOKEN=hf_your_token_here" > .env
 
-## API
+# 2. Build and run
+docker compose up --build
+
+# 3. Open debug frontend
+open http://localhost:8090
+```
+
+First start downloads models (~4GB total). Cached in Docker volumes after that.
+
+## Prerequisites
+
+- Docker with NVIDIA GPU support (nvidia-container-toolkit)
+- HuggingFace account with access to:
+  - [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+  - [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+  - [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+
+## Interface
+
+### WebSocket — `/ws/stream` (real-time)
+
+```
+Client → Server: binary frames (16kHz float32 PCM)
+Client → Server: {"action": "flush"}     force-transcribe buffer
+Client → Server: {"action": "reset"}     clear state
+Client → Server: {"action": "config", "simulate_ble": true/false}
+
+Server → Client: {
+  "text": "[Baptiste] Hello...",
+  "segments": [{"speaker_id": "spk_a1b2c3d4", "speaker_name": "Baptiste", ...}],
+  "language": "fr",
+  "latency_ms": 1050,
+  "transcribe_ms": 400,
+  "diarize_ms": 650
+}
+```
+
+### REST — speaker management
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/transcribe` | Full pipeline: audio → LC3 sim → whisper → text |
-| `POST` | `/api/simulate-ble` | LC3 pipeline only (no whisper), returns stats + audio |
-| `GET` | `/api/health` | Backend + whisper.cpp reachability check |
-| `PUT` | `/api/settings` | Update whisper URL at runtime |
-| `GET` | `/` | Static frontend |
+| `GET` | `/api/speakers` | List all speaker profiles |
+| `PUT` | `/api/speakers/{id}` | Name a speaker: `{"name": "Alice"}` |
+| `DELETE` | `/api/speakers/{id}` | Delete a speaker profile |
+| `POST` | `/api/transcribe` | Batch file upload (fallback) |
+| `GET` | `/api/health` | Service status |
 
-### POST /api/transcribe
+## Speaker identification flow
 
-Query parameters:
-- `simulate_ble` (bool, default `true`) — run LC3 encode/decode pipeline
-- `diarize` (bool, default `true`) — enable tinydiarize speaker turns
+1. **During meeting**: pyannote diarizes + extracts voice embeddings per speaker
+2. **Match against Chroma**: cosine similarity → reuse existing UUID or create new
+3. **Persistent IDs**: same voice = same `spk_xxxxxxxx` across sessions
+4. **Naming**: click speaker label in UI → type name → stored in Chroma
+5. **At summarization**: OpenClaw gets transcript with named speaker IDs + profile DB
 
-Body: `multipart/form-data` with `file` field (WAV, WebM, or raw PCM).
+## Environment variables
 
-## Using with a remote whisper instance (Tailscale)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HF_TOKEN` | (required) | HuggingFace token for pyannote models |
+| `WHISPER_MODEL` | `large-v3` | faster-whisper model size |
+| `WHISPER_DEVICE` | `auto` | `auto`, `cuda`, or `cpu` |
+| `WHISPER_COMPUTE_TYPE` | `float16` | `float16`, `int8`, or `float32` |
 
-1. Run whisper.cpp on a remote machine (e.g., Mac Studio):
-   ```bash
-   docker compose up whisper-cpp
-   ```
-2. On the debug machine, point the backend at the remote:
-   ```bash
-   WHISPER_URL=http://<tailscale-ip>:8081 docker compose up debug-backend
-   ```
-3. Or change the URL in the browser settings panel at runtime.
+## Docker volumes
 
-## LC3 constants (matching firmware)
-
-These match `firmware/src/lc3_encoder.h` exactly:
-
-| Constant | Value | Source |
-|----------|-------|--------|
-| Sample rate | 24000 Hz | `LC3_SAMPLE_RATE` |
-| Frame duration | 10 ms | `LC3_FRAME_US` |
-| Frame samples | 240 | `LC3_FRAME_SAMPLES` |
-| Bitrate | 48 kbps | `LC3_BITRATE` |
-| Frame bytes | 60 | `LC3_FRAME_BYTES` |
-
-## Switching whisper model
-
-To use a smaller model for faster testing:
-
-```yaml
-# docker-compose.yml
-whisper-cpp:
-  build:
-    args:
-      MODEL: base.en    # ~150MB, English-only, fast on CPU
-```
-
-Available models: `tiny`, `base`, `small`, `medium`, `large-v3`
+| Volume | Purpose |
+|--------|---------|
+| `cervos_model-cache` | HuggingFace model weights (persists across rebuilds) |
+| `cervos_speaker-data` | Chroma speaker profiles (voice fingerprints) |
 
 ## File structure
 
 ```
 debug-app/
-├── docker-compose.yml
-├── whisper/
-│   ├── Dockerfile           # Multi-stage: compile whisper.cpp + download model
-│   └── entrypoint.sh        # Finds model, starts server with --tdrz
+├── docker-compose.yml          # cervos-voice-service (single GPU container)
+├── .env                        # HF_TOKEN (gitignored)
 ├── backend/
-│   ├── Dockerfile           # Python 3.12 + liblc3 (built from source) + FastAPI
+│   ├── Dockerfile              # CUDA + faster-whisper + pyannote + chromadb
 │   ├── requirements.txt
-│   ├── app.py               # FastAPI routes
-│   ├── audio_utils.py       # WAV loading, resampling
-│   └── lc3_pipeline.py      # LC3 encode/decode + BLE packet simulation
+│   ├── app.py                  # FastAPI + WebSocket streaming
+│   ├── streaming_stt.py        # faster-whisper + pyannote + speaker ID
+│   ├── speaker_store.py        # Chroma-backed persistent voice profiles
+│   ├── lc3_pipeline.py         # LC3 BLE simulation (optional)
+│   └── audio_utils.py          # WAV loading, resampling
 └── frontend/
-    ├── index.html           # Single-page UI
-    ├── style.css            # Cervos dark elevation theme
-    └── app.js               # Mic recording, file upload, API calls
+    ├── index.html              # Debug UI
+    ├── style.css               # Cervos dark elevation theme
+    └── app.js                  # WebSocket streaming + speaker management
 ```

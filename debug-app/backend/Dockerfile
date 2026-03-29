@@ -1,21 +1,11 @@
-# Cervos Debug — Backend (faster-whisper + CUDA + LC3)
-# Single container: FastAPI + WebSocket streaming STT + LC3 BLE simulation
+# Cervos Debug — App layer (source code only, rebuilds in seconds)
+# Requires base image: docker build -f backend/Dockerfile.base -t cervos-voice-base .
 
-FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
+FROM cervos-voice-base
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-dev \
-    build-essential git pkg-config \
-    libcublas-12-6 libcudnn9-cuda-12 \
-    && rm -rf /var/lib/apt/lists/*
+ENV TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 WORKDIR /app
-
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir  -r requirements.txt
 
 # Copy backend source
 COPY backend/*.py ./

@@ -1,14 +1,17 @@
+name: cervos
+
 services:
-  debug-app:
+  voice-service:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: cervos-debug-app
+    image: cervos-voice-service
+    container_name: cervos-voice-service
     ports:
       - "8090:8090"
     env_file: .env
     environment:
-      - WHISPER_MODEL=large-v3
+      - WHISPER_MODEL=large-v3-turbo
       - WHISPER_DEVICE=auto
       - WHISPER_COMPUTE_TYPE=float16
     deploy:
@@ -20,7 +23,10 @@ services:
               capabilities: [gpu]
     volumes:
       - model-cache:/root/.cache/huggingface
+      - speaker-data:/app/data/chroma
+      - ./frontend:/app/static:ro
     restart: unless-stopped
 
 volumes:
   model-cache:
+  speaker-data:

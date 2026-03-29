@@ -19,21 +19,38 @@
     </header>
 
     <!-- Stream controls -->
-    <section>
-      <div style="display:flex;align-items:center;gap:16px;">
+    <section class="stream-section">
+      <div class="stream-row-top">
         <button class="btn btn-record" id="stream-btn">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
             <circle cx="12" cy="12" r="8"/>
           </svg>
         </button>
-        <div>
+        <div style="min-width:0;">
           <div id="stream-label" style="font-size:14px;font-weight:500;">Stream</div>
-          <div style="font-size:11px;color:var(--text-disabled);">Real-time mic → STT</div>
+          <div style="font-size:11px;color:var(--text-disabled);" id="stream-hint">Real-time audio → STT</div>
         </div>
 
         <canvas id="vu-meter" class="hidden" width="300" height="16"
-                style="border-radius:4px;flex:1;"></canvas>
+                style="border-radius:4px;flex:1;min-width:80px;"></canvas>
 
+        <button class="btn btn-secondary" id="clear-btn">Clear</button>
+      </div>
+      <div class="stream-row-bottom">
+        <div class="source-select">
+          <label class="source-option">
+            <input type="radio" name="audio-source" value="mic" checked>
+            <span>Mic</span>
+          </label>
+          <label class="source-option">
+            <input type="radio" name="audio-source" value="system">
+            <span>System</span>
+          </label>
+        </div>
+        <select id="device-select" class="device-select">
+          <option value="">Default mic</option>
+        </select>
+        <div style="flex:1;"></div>
         <div class="toggle-row" style="margin:0;">
           <label class="toggle">
             <input type="checkbox" id="ble-sim">
@@ -41,8 +58,6 @@
           </label>
           <span style="font-size:12px;">BLE sim</span>
         </div>
-
-        <button class="btn btn-secondary" id="clear-btn">Clear</button>
       </div>
     </section>
 
@@ -59,6 +74,20 @@
         <div style="color:var(--text-disabled);font-size:13px;padding:16px;text-align:center;">
           Hit Stream and start talking
         </div>
+      </div>
+    </section>
+
+    <!-- Speaker profiles -->
+    <section>
+      <h2>Speaker Profiles <span id="speaker-count" class="meta-tag" style="margin-left:8px;"></span></h2>
+      <div id="speakers-list" class="speakers-list">
+        <div style="color:var(--text-disabled);font-size:13px;padding:12px;text-align:center;">
+          No speakers detected yet
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button class="btn btn-secondary" id="refresh-speakers">Refresh</button>
+        <button class="btn btn-secondary" onclick="resetAllSpeakers()" style="color:var(--error);">Reset All</button>
       </div>
     </section>
 

@@ -15,6 +15,7 @@ let analyserNode = null;
 let vuAnimFrame = null;
 let isStreaming = false;
 let transcripts = [];
+let shownSegments = new Set();
 
 // ── DOM refs ───────────────────────────────────────────────────────────────
 
@@ -36,9 +37,15 @@ document.addEventListener('DOMContentLoaded', () => {
   els.dropZone     = $('drop-zone');
   els.fileName     = $('file-name');
   els.uploadBtn    = $('upload-btn');
+  els.speakersList = $('speakers-list');
+  els.speakerCount = $('speaker-count');
+  els.refreshSpeakers = $('refresh-speakers');
 
   els.streamBtn.addEventListener('click', toggleStream);
   els.clearBtn.addEventListener('click', clearTranscripts);
+  els.refreshSpeakers.addEventListener('click', loadSpeakers);
+  els.streamHint = $('stream-hint');
+  els.deviceSelect = $('device-select');
   els.dropZone.addEventListener('click', () => els.fileInput.click());
   els.fileInput.addEventListener('change', handleFileSelect);
   els.uploadBtn.addEventListener('click', uploadFile);
@@ -50,7 +57,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.dataTransfer.files.length) { els.fileInput.files = e.dataTransfer.files; handleFileSelect(); }
   });
 
+  // Show/hide device picker based on source mode
+  document.querySelectorAll('input[name="audio-source"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      els.deviceSelect.classList.toggle('hidden', getAudioSource() === 'system');
+    });
+  });
+
   checkHealth();
+  loadSpeakers();
+  enumerateAudioDevices();
 });
 
 
@@ -79,25 +95,152 @@ async function toggleStream() {
   }
 }
 
-async function startStream() {
+function getAudioSource() {
+  const sel = document.querySelector('input[name="audio-source"]:checked');
+  return sel ? sel.value : 'mic';
+}
+
+async function enumerateAudioDevices() {
   try {
-    // Open WebSocket
+    // Need a brief getUserMedia call to get permission, then enumerate
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    tempStream.getTracks().forEach(t => t.stop());
+
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const audioInputs = devices.filter(d => d.kind === 'audioinput');
+
+    els.deviceSelect.innerHTML = '<option value="">Default mic</option>';
+    for (const dev of audioInputs) {
+      const opt = document.createElement('option');
+      opt.value = dev.deviceId;
+      opt.textContent = dev.label || `Mic ${els.deviceSelect.options.length}`;
+      els.deviceSelect.appendChild(opt);
+    }
+  } catch {
+    // Permission denied or no devices — leave default
+  }
+}
+
+async function startStream() {
+  const source_type = getAudioSource();
+
+  try {
+    // Ensure clean state
+    if (audioContext) { audioContext.close().catch(() => {}); audioContext = null; }
+    if (audioStream) { audioStream.getTracks().forEach(t => t.stop()); audioStream = null; }
+
+    // Create AudioContext FIRST — must happen synchronously in the click handler
+    // chain (before any await) so Chrome's autoplay policy treats it as user-initiated
+    audioContext = new AudioContext();
+
+    // Acquire audio stream based on selected source
+    if (source_type === 'system') {
+      // System audio capture via getDisplayMedia — Chrome/Edge only.
+      // Firefox doesn't support audio in getDisplayMedia at all.
+      // For Firefox/Safari, use Mic mode with a virtual audio device (VB-Cable, BlackHole).
+      const isFirefox = navigator.userAgent.includes('Firefox');
+      if (isFirefox) {
+        throw new Error(
+          'Firefox doesn\'t support system audio capture. ' +
+          'Use Chrome/Edge, or switch to Mic mode with a virtual audio device (VB-Cable on Windows, BlackHole on Mac).'
+        );
+      }
+
+      let displayStream;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
+          systemAudio: 'include',
+        });
+      } catch {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
+        });
+      }
+
+      // Drop the video track immediately — we only need audio
+      displayStream.getVideoTracks().forEach(t => t.stop());
+      const audioTrack = displayStream.getAudioTracks()[0];
+      if (!audioTrack) {
+        throw new Error(
+          'No audio track received. Select "Entire Screen" and check "Share system audio". ' +
+          'Or switch to Mic mode with a virtual audio device.'
+        );
+      }
+      audioStream = new MediaStream([audioTrack]);
+      audioTrack.addEventListener('ended', () => { if (isStreaming) stopStream(); });
+    } else {
+      // Mic mode — use selected device or default
+      const deviceId = els.deviceSelect.value;
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        sampleRate: SAMPLE_RATE,
+      };
+      if (deviceId) audioConstraints.deviceId = { exact: deviceId };
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    }
+
+    // Resume AudioContext after media prompt (Chrome sometimes suspends during dialog)
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+    }
+
+    // Open WebSocket and wait for it to be ready before piping audio
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws/stream`);
     ws.binaryType = 'arraybuffer';
 
-    ws.onopen = () => {
-      // Send config
-      ws.send(JSON.stringify({
-        action: 'config',
-        simulate_ble: els.bleSim.checked,
-      }));
-    };
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = () => reject(new Error('WebSocket connection failed'));
+      setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
+    });
+
+    // Send config
+    ws.send(JSON.stringify({
+      action: 'config',
+      simulate_ble: els.bleSim.checked,
+    }));
 
     ws.onmessage = e => {
       const data = JSON.parse(e.data);
-      if (data.text) {
-        addTranscript(data);
+
+      // Speaker enrichment update — arrives after text, adds speaker labels
+      if (data.type === 'speaker_update' && data.segments) {
+        updateSpeakerLabels(data.segments);
+        loadSpeakers();
+        return;
+      }
+
+      // WhisperLive format: { segments: [{start, end, text, completed}, ...] }
+      if (data.segments && data.segments.length > 0) {
+        const completed = data.segments.filter(s => s.completed);
+        const pending = data.segments.filter(s => !s.completed);
+
+        // Show completed segments as final transcripts (text first, speaker labels come later)
+        for (const seg of completed) {
+          const key = `${seg.start}-${seg.text}`;
+          if (!shownSegments.has(key)) {
+            shownSegments.add(key);
+            addTranscript({
+              text: seg.text,
+              segments: [seg],
+              language: data.language,
+              _segKey: key,  // used to find and update with speaker labels later
+            });
+          }
+        }
+
+        // Show pending (incomplete) segments as live text
+        if (pending.length > 0) {
+          els.liveText.textContent = pending.map(s => s.text).join(' ');
+          els.liveText.classList.remove('hidden');
+        } else {
+          els.liveText.textContent = '';
+        }
       }
     };
 
@@ -111,43 +254,53 @@ async function startStream() {
       if (isStreaming) stopStream();
     };
 
-    // Open mic at native rate, resample to 16kHz in worklet
-    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioContext = new AudioContext();
-    const source = audioContext.createMediaStreamSource(audioStream);
+    // Now wire up audio — WS is open, AudioContext is running, stream is active
+    const audioSource = audioContext.createMediaStreamSource(audioStream);
 
     // VU meter
     analyserNode = audioContext.createAnalyser();
     analyserNode.fftSize = 256;
-    source.connect(analyserNode);
+    audioSource.connect(analyserNode);
     startVuMeter();
 
-    // PCM capture via ScriptProcessor → resample → send as binary
-    const scriptNode = audioContext.createScriptProcessor(4096, 1, 1);
+    // PCM capture via ScriptProcessor → downmix to mono → resample → send as binary
+    // System audio may be stereo, so we request 2 input channels and mix down
+    const inputChannels = source_type === 'system' ? 2 : 1;
+    const scriptNode = audioContext.createScriptProcessor(4096, inputChannels, 1);
     const nativeRate = audioContext.sampleRate;
 
     scriptNode.onaudioprocess = e => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const input = e.inputBuffer.getChannelData(0);
-
-      // Resample from native rate to 16kHz
-      const pcm16k = resampleBuffer(input, nativeRate, SAMPLE_RATE);
-
-      // Send as float32 binary
+      let mono;
+      if (inputChannels === 2) {
+        const left = e.inputBuffer.getChannelData(0);
+        const right = e.inputBuffer.numberOfChannels > 1 ? e.inputBuffer.getChannelData(1) : left;
+        mono = new Float32Array(left.length);
+        for (let i = 0; i < left.length; i++) mono[i] = (left[i] + right[i]) * 0.5;
+      } else {
+        mono = e.inputBuffer.getChannelData(0);
+      }
+      const pcm16k = resampleBuffer(mono, nativeRate, SAMPLE_RATE);
       ws.send(pcm16k.buffer);
     };
 
-    source.connect(scriptNode);
+    audioSource.connect(scriptNode);
     scriptNode.connect(audioContext.destination);
     workletNode = scriptNode;
 
     isStreaming = true;
     els.streamBtn.classList.add('recording');
     els.streamLabel.textContent = 'Stop';
+    els.streamHint.textContent = source_type === 'system' ? 'Capturing system audio' : 'Capturing microphone';
     els.liveText.textContent = 'Listening...';
     els.liveText.classList.remove('hidden');
 
   } catch (e) {
+    // Clean up partial state on failure
+    if (audioStream) { audioStream.getTracks().forEach(t => t.stop()); audioStream = null; }
+    if (audioContext && audioContext.state !== 'closed') { audioContext.close().catch(() => {}); }
+    audioContext = null;
+    if (ws) { ws.close(); ws = null; }
     els.liveText.textContent = `Error: ${e.message}`;
     els.liveText.classList.remove('hidden');
   }
@@ -157,21 +310,27 @@ function stopStream() {
   // Flush remaining audio
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ action: 'flush' }));
-    // Give a moment for flush response, then close
     setTimeout(() => {
-      if (ws) ws.close();
-      ws = null;
+      if (ws) { ws.close(); ws = null; }
     }, 500);
+  } else {
+    ws = null;
   }
 
-  if (workletNode) { workletNode.disconnect(); workletNode = null; }
+  // Cleanup audio in correct order: nodes → stream → context
   stopVuMeter();
+  if (workletNode) { workletNode.onaudioprocess = null; workletNode.disconnect(); workletNode = null; }
+  analyserNode = null;
   if (audioStream) { audioStream.getTracks().forEach(t => t.stop()); audioStream = null; }
-  if (audioContext) { audioContext.close(); audioContext = null; }
+  if (audioContext && audioContext.state !== 'closed') {
+    audioContext.close().catch(() => {});
+  }
+  audioContext = null;
 
   isStreaming = false;
   els.streamBtn.classList.remove('recording');
   els.streamLabel.textContent = 'Stream';
+  els.streamHint.textContent = 'Real-time audio → STT';
   els.liveText.textContent = '';
   els.liveText.classList.add('hidden');
 }
@@ -201,12 +360,11 @@ function resampleBuffer(input, fromRate, toRate) {
 function addTranscript(data) {
   transcripts.push(data);
 
-  // Update live text
-  els.liveText.textContent = data.text;
-
   // Add to transcript list
   const div = document.createElement('div');
   div.className = 'transcript-entry';
+  // Tag with segment key so speaker updates can find it later
+  if (data._segKey) div.dataset.segKey = data._segKey;
 
   const lang = data.language ? `[${data.language}]` : '';
   const latency = data.latency_ms ? `${data.latency_ms}ms` : '';
@@ -214,21 +372,28 @@ function addTranscript(data) {
   const diarize = data.diarize_ms ? `diarize ${data.diarize_ms}ms` : '';
   const stt = data.transcribe_ms ? `stt ${data.transcribe_ms}ms` : '';
 
-  // Format text with speaker labels highlighted
-  const formattedText = escapeHtml(data.text)
-    .replace(/\[SPEAKER_(\d+)\]/g, '<span class="speaker-label">Speaker $1</span>');
-
   div.innerHTML = `
-    <div class="transcript-text">${formattedText}</div>
+    <span class="speaker-tag"></span>
+    <div class="transcript-text">${escapeHtml(data.text)}</div>
     <div class="transcript-meta">
-      <span class="meta-tag">${lang}</span>
-      <span class="meta-tag">${stt}</span>
+      ${lang ? `<span class="meta-tag">${lang}</span>` : ''}
+      ${stt ? `<span class="meta-tag">${stt}</span>` : ''}
       ${diarize ? `<span class="meta-tag">${diarize}</span>` : ''}
-      <span class="meta-tag">${duration} audio</span>
-      <span class="meta-tag">total ${latency}</span>
+      ${duration ? `<span class="meta-tag">${duration} audio</span>` : ''}
+      ${latency ? `<span class="meta-tag">total ${latency}</span>` : ''}
     </div>
   `;
   els.transcripts.prepend(div);
+
+  // Cap DOM nodes to prevent memory growth in long sessions
+  const MAX_TRANSCRIPT_ENTRIES = 200;
+  while (els.transcripts.children.length > MAX_TRANSCRIPT_ENTRIES) {
+    els.transcripts.removeChild(els.transcripts.lastChild);
+  }
+  // Also cap the in-memory array
+  if (transcripts.length > MAX_TRANSCRIPT_ENTRIES) {
+    transcripts = transcripts.slice(-MAX_TRANSCRIPT_ENTRIES);
+  }
 
   // Update stats bar
   if (data.latency_ms) {
@@ -238,8 +403,31 @@ function addTranscript(data) {
 
 function clearTranscripts() {
   transcripts = [];
+  shownSegments = new Set();
   els.transcripts.innerHTML = '';
   els.statsBar.textContent = '';
+}
+
+function updateSpeakerLabels(segments) {
+  // Enrich existing transcript entries with speaker labels from diarization
+  for (const seg of segments) {
+    const sid = seg.speaker_id;
+    const name = seg.speaker_name;
+    if (!sid) continue;
+
+    const label = name || sid.slice(0, 12);
+    const key = `${seg.start}-${seg.text}`;
+
+    // Find the DOM entry by segKey
+    const entry = els.transcripts.querySelector(`[data-seg-key="${CSS.escape(key)}"]`);
+    if (entry) {
+      const tag = entry.querySelector('.speaker-tag');
+      if (tag) {
+        tag.innerHTML = `<span class="speaker-label clickable" onclick="promptRenameSpeaker('${sid}', this)">${escapeHtml(label)}</span> `;
+        tag.classList.add('visible');
+      }
+    }
+  }
 }
 
 
@@ -347,4 +535,85 @@ function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+
+// ── Speaker Profiles ──────────────────────────────────────────────────────
+
+async function loadSpeakers() {
+  try {
+    const r = await fetch('/api/speakers');
+    const data = await r.json();
+    renderSpeakers(data.speakers || []);
+  } catch {
+    // Backend not ready yet
+  }
+}
+
+function renderSpeakers(speakers) {
+  els.speakerCount.textContent = speakers.length ? `${speakers.length} known` : '';
+
+  if (!speakers.length) {
+    els.speakersList.innerHTML = `
+      <div style="color:var(--text-disabled);font-size:13px;padding:12px;text-align:center;">
+        No speakers detected yet
+      </div>`;
+    return;
+  }
+
+  els.speakersList.innerHTML = speakers.map(s => {
+    const name = s.name || '';
+    const shortId = s.id.slice(0, 12);
+    const samples = s.sample_count || 0;
+    const lastSeen = s.last_seen ? new Date(s.last_seen).toLocaleString() : '';
+
+    return `
+      <div class="speaker-row" data-id="${s.id}">
+        <div class="speaker-id">${shortId}</div>
+        <input class="speaker-name-input" type="text" value="${escapeHtml(name)}"
+               placeholder="Unknown — click to name"
+               onchange="renameSpeaker('${s.id}', this.value)">
+        <div class="speaker-meta">
+          <span class="meta-tag">${samples} samples</span>
+          <span class="meta-tag">${lastSeen}</span>
+        </div>
+        <button class="btn-icon" onclick="deleteSpeaker('${s.id}')" title="Delete">&#x2715;</button>
+      </div>`;
+  }).join('');
+}
+
+async function renameSpeaker(id, name) {
+  await fetch(`/api/speakers/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  loadSpeakers();
+}
+
+async function deleteSpeaker(id) {
+  await fetch(`/api/speakers/${id}`, { method: 'DELETE' });
+  loadSpeakers();
+}
+
+function promptRenameSpeaker(id, el) {
+  const current = el.textContent;
+  const name = prompt(`Name for ${id}:`, current.startsWith('spk_') ? '' : current);
+  if (name !== null) {
+    renameSpeaker(id, name);
+    // Update all instances of this speaker in the transcript view
+    document.querySelectorAll(`.speaker-label[onclick*="${id}"]`).forEach(span => {
+      span.textContent = name || id.slice(0, 12);
+    });
+  }
+}
+
+async function resetAllSpeakers() {
+  if (!confirm('Delete all speaker profiles? This cannot be undone.')) return;
+  const r = await fetch('/api/speakers');
+  const data = await r.json();
+  for (const s of (data.speakers || [])) {
+    await fetch(`/api/speakers/${s.id}`, { method: 'DELETE' });
+  }
+  loadSpeakers();
 }

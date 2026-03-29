@@ -1,0 +1,33 @@
+# Cervos Debug — Base image (verified working: WhisperLive + pyannote + Chroma)
+# Build once: docker build -f backend/Dockerfile.base -t cervos-voice-base .
+
+FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-dev \
+    build-essential git pkg-config \
+    libcublas-12-6 libcudnn9-cuda-12 \
+    portaudio19-dev \
+    ffmpeg libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev \
+    libavfilter-dev libswscale-dev libswresample-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Verified working combination (tested in container):
+# 1. torch 2.6.x — keeps torchaudio.AudioMetaData needed by pyannote 3.1.1
+# 2. whisper-live 0.8.0 from GitHub main (pip version is outdated, missing backend/)
+# 3. faster-whisper >= 1.1.0 (needed by whisper-live 0.8.0 for pad_or_trim)
+# 4. pyannote.audio 3.1.1 — stable, works with torch 2.6 + TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+# 5. numpy < 2 — avoids onnxruntime conflicts
+
+RUN pip install --no-cache-dir "torch>=2.6.0,<2.7.0" "torchaudio>=2.6.0,<2.7.0"
+RUN pip install --no-cache-dir --no-deps git+https://github.com/collabora/WhisperLive.git
+RUN pip install --no-cache-dir "faster-whisper>=1.1.0"
+RUN pip install --no-cache-dir "pyannote.audio==3.1.1" "numpy>=1.24.3,<2" "huggingface_hub<0.25"
+RUN pip install --no-cache-dir \
+    fastapi==0.115.6 "uvicorn[standard]==0.34.0" websockets==14.2 \
+    python-multipart==0.0.20 "chromadb>=0.6.0" requests
