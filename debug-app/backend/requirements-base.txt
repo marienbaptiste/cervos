@@ -1,18 +1,16 @@
-# Proven compatible stack from vbrazo/whisper-pyannote-transcription-api
-# torch 2.6 + pyannote 3.1.1 + faster-whisper 0.10 — tested in production
-# Install whisper-live first — it pulls its own faster-whisper + torch
-whisper-live
-# Then pin torch/torchaudio to 2.6.x (keeps torchaudio.AudioMetaData for pyannote 3.1.1)
+# Custom streaming diarization — pyannote components + faster-whisper
+# No diart dependency. Uses pyannote segmentation + embedding models directly.
+numpy==1.26.4
 torch>=2.6.0,<2.7.0
 torchaudio>=2.6.0,<2.7.0
-# Pyannote 3.1.1 — stable, compatible with torch 2.6
 pyannote.audio==3.1.1
-numpy>=1.24.3,<2
+faster-whisper>=1.1.0
+# WhisperLive installed separately in Dockerfile.base (--no-deps to avoid numpy conflict)
 # Server
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 websockets==14.2
 python-multipart==0.0.20
-# Speaker profiles
 chromadb>=0.6.0
 requests
+huggingface_hub<0.25

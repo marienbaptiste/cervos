@@ -1,5 +1,5 @@
 """
-Cervos Debug — Speaker profile store (Chroma-backed)
+Cervos Voice Service — Speaker profile store (Chroma-backed)
 
 Stores voice fingerprints (speaker embeddings) in a Chroma collection.
 Each unique voice gets a persistent UUID that survives across sessions.
@@ -13,10 +13,10 @@ from datetime import datetime, timezone
 import numpy as np
 import chromadb
 
-logger = logging.getLogger("cervos-debug")
+logger = logging.getLogger("cervos-voice")
 
 COLLECTION_NAME = "speaker_profiles"
-SIMILARITY_THRESHOLD = 0.35  # cosine similarity — low for short audio chunks; tune up for longer segments
+SIMILARITY_THRESHOLD = 0.55  # cosine similarity — tuned for masked-audio embeddings from segmentation
 
 
 class SpeakerStore:

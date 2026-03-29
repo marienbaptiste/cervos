@@ -1,5 +1,5 @@
 """
-Cervos Debug — LC3 BLE pipeline simulation
+Cervos Voice Service — LC3 BLE pipeline simulation
 
 Simulates the firmware→phone audio path:
   1. Split PCM into 10ms frames (240 samples at 24kHz)

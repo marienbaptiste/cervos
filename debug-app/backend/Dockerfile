@@ -1,4 +1,4 @@
-# Cervos Debug — App layer (source code only, rebuilds in seconds)
+# Cervos Voice Service — App layer (source code only, rebuilds in seconds)
 # Requires base image: docker build -f backend/Dockerfile.base -t cervos-voice-base .
 
 FROM cervos-voice-base

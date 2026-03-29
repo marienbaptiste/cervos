@@ -1,5 +1,5 @@
 """
-Cervos Debug — Audio utilities
+Cervos Voice Service — Audio utilities
 
 Handles loading audio from various formats and resampling between rates.
 """

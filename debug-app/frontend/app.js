@@ -1,4 +1,4 @@
-// Cervos Debug — Real-time streaming STT frontend
+// Cervos Voice Service — Real-time streaming STT frontend
 // WebSocket streams PCM chunks from mic → backend → live transcription
 
 const SAMPLE_RATE = 16000;
@@ -213,19 +213,52 @@ async function startStream() {
       const data = JSON.parse(e.data);
       console.log('WS msg:', JSON.stringify(data).slice(0, 200));
 
-      // Diarized transcript — replaces transcript with speaker-attributed version
-      if (data.type === 'diarized_transcript' && data.segments) {
-        // Replace speakerMap from the properly aligned diarization
-        speakerMap = {};
-        for (const seg of data.segments) {
-          if (seg.speaker_id) {
-            speakerMap[seg.start] = { id: seg.speaker_id, name: seg.speaker_name };
-          }
-          // Also update allSegments with diarized versions (matched timestamps)
-          allSegments[seg.start] = { ...seg, completed: true };
+      // Speaker turns — streaming diarization with persistent IDs, arrives every 500ms
+      if (data.type === 'speaker_turns' && data.turns) {
+        // Accumulate turns across all windows (don't replace)
+        for (const turn of data.turns) {
+          speakerTurns.push(turn);
         }
+        // Cap to prevent unbounded growth in long sessions
+        if (speakerTurns.length > 2000) {
+          speakerTurns = speakerTurns.slice(-1000);
+        }
+
+        // Build a name lookup from all known speaker IDs
+        const nameById = {};
+        for (const turn of speakerTurns) {
+          if (turn.speaker_name) nameById[turn.speaker_id] = turn.speaker_name;
+        }
+
+        // Match all completed segments against full turn history
+        for (const key of Object.keys(allSegments)) {
+          const seg = allSegments[key];
+          if (!seg.completed) continue;
+          const sStart = parseFloat(seg.start);
+          const sEnd = parseFloat(seg.end);
+          let bestTurn = null, bestOverlap = 0;
+          for (const turn of speakerTurns) {
+            const overlap = Math.max(0, Math.min(sEnd, turn.end) - Math.max(sStart, turn.start));
+            if (overlap > bestOverlap) {
+              bestOverlap = overlap;
+              bestTurn = turn;
+            }
+          }
+          if (bestTurn) {
+            speakerMap[seg.start] = {
+              id: bestTurn.speaker_id,
+              name: nameById[bestTurn.speaker_id] || bestTurn.speaker_name,
+            };
+          }
+        }
+
+        // Propagate names to all previously mapped segments
+        for (const key of Object.keys(speakerMap)) {
+          const name = nameById[speakerMap[key].id];
+          if (name) speakerMap[key].name = name;
+        }
+
         renderTranscript();
-        loadSpeakers();
         return;
       }
 
@@ -405,6 +438,7 @@ function clearTranscripts() {
   shownSegments = new Set();
   allSegments = {};
   speakerMap = {};
+  speakerTurns = [];
   els.transcripts.innerHTML = '';
   els.liveText.textContent = '';
   els.liveText.classList.add('hidden');

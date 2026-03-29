@@ -1,9 +1,10 @@
 """
-Cervos Debug — Streaming STT powered by WhisperLive + pyannote speaker ID
+Cervos Voice Service — Streaming STT (WhisperLive) + Streaming Diarization (pyannote components)
 
-Uses WhisperLive's battle-tested ServeClientFasterWhisper for real-time
-streaming transcription. Adds pyannote diarization + persistent speaker
-profiles on top.
+- WhisperLive: real-time transcript via ServeClientFasterWhisper
+- SpeakerDiarizer: custom streaming diarization using pyannote segmentation + embedding
+  models directly (no diart, no full Pipeline). 5s sliding window, 500ms step.
+- SpeakerStore (Chroma): persistent speaker fingerprints across sessions
 """
 
 import os
@@ -16,15 +17,12 @@ import numpy as np
 
 from speaker_store import SpeakerStore
 
-logger = logging.getLogger("cervos-debug")
+logger = logging.getLogger("cervos-voice")
 SAMPLE_RATE = 16000
 
 
 class WebSocketAdapter:
-    """
-    Adapts a queue to look like a websocket for WhisperLive's ServeClientFasterWhisper.
-    WhisperLive sends JSON strings via websocket.send() — we capture them in a queue.
-    """
+    """Adapts a queue to look like a websocket for WhisperLive."""
     def __init__(self):
         self.outbox = queue.Queue()
 
@@ -35,16 +33,276 @@ class WebSocketAdapter:
         pass
 
 
+class RingBuffer:
+    """Pre-allocated circular buffer for audio samples. O(1) append."""
+
+    def __init__(self, capacity: int):
+        self.buffer = np.zeros(capacity, dtype=np.float32)
+        self.write_pos = 0
+        self.available = 0
+        self.capacity = capacity
+
+    def write(self, data: np.ndarray):
+        n = len(data)
+        if n == 0:
+            return
+        if n >= self.capacity:
+            self.buffer[:] = data[-self.capacity:]
+            self.write_pos = 0
+            self.available = self.capacity
+            return
+        end = self.write_pos + n
+        if end <= self.capacity:
+            self.buffer[self.write_pos:end] = data
+        else:
+            first = self.capacity - self.write_pos
+            self.buffer[self.write_pos:] = data[:first]
+            self.buffer[:n - first] = data[first:]
+        self.write_pos = end % self.capacity
+        self.available = min(self.available + n, self.capacity)
+
+    def read_last(self, n: int) -> np.ndarray:
+        """Read the last n samples as a contiguous array."""
+        n = min(n, self.available)
+        if n == 0:
+            return np.array([], dtype=np.float32)
+        start = (self.write_pos - n) % self.capacity
+        if start + n <= self.capacity:
+            return self.buffer[start:start + n].copy()
+        else:
+            return np.concatenate([
+                self.buffer[start:],
+                self.buffer[:n - (self.capacity - start)]
+            ])
+
+    def clear(self):
+        self.write_pos = 0
+        self.available = 0
+
+
+class SpeakerDiarizer:
+    """
+    Streaming speaker diarization using pyannote components directly.
+
+    Uses pyannote/segmentation-3.0 for per-speaker frame activations and
+    pyannote/wespeaker-voxceleb-resnet34-LM for speaker embeddings.
+    Matches embeddings against Chroma (SpeakerStore) for persistent IDs.
+
+    No diart dependency. No full pyannote Pipeline. No agglomerative clustering.
+    """
+
+    WINDOW_S = 5.0       # sliding window duration
+    STEP_S = 0.5         # step size
+    TAU_ACTIVE = 0.5     # speaker activation threshold
+    MIN_SPEECH_S = 0.5   # minimum speech per speaker to extract embedding
+
+    def __init__(self, device: str, hf_token: str, speaker_store: SpeakerStore):
+        self.ready = False
+        self.speaker_store = speaker_store
+        self._lock = threading.Lock()
+        self._new_samples = 0
+        self._time_offset = 0.0
+
+        window_samples = int(self.WINDOW_S * SAMPLE_RATE)
+        self._step_samples = int(self.STEP_S * SAMPLE_RATE)
+        self._window_samples = window_samples
+        self._ring = RingBuffer(window_samples)
+
+        # Frame resolution (will be set after model loads)
+        self._frame_step_s = 0.0
+        self._to_multilabel = None
+
+        try:
+            import torch
+            from pyannote.audio import Model
+
+            dev = torch.device(device if torch.cuda.is_available() else "cpu")
+            self._device = dev
+            self._torch = torch
+
+            # --- Segmentation model ---
+            logger.info("Loading pyannote/segmentation-3.0...")
+            self._seg_model = Model.from_pretrained(
+                "pyannote/segmentation-3.0",
+                use_auth_token=hf_token,
+            ).to(dev).eval()
+
+            # Compute frame resolution from model introspection
+            specs = self._seg_model.specifications
+            # segmentation-3.0: powerset with max_speakers_per_chunk=3, max_speakers_per_frame=2
+            # Output is (batch, frames, num_powerset_classes)
+            # We need the Powerset converter to go from powerset → multilabel
+            from pyannote.audio.utils.powerset import Powerset
+            powerset = Powerset(
+                len(specs.classes),
+                specs.powerset_max_classes,
+            )
+            # Move mapping tensor to same device as model to avoid CPU/CUDA mismatch
+            powerset.mapping = powerset.mapping.to(dev)
+            self._to_multilabel = powerset.to_multilabel
+
+            # Frame step: run a dummy forward pass to get exact frame count
+            dummy = torch.zeros(1, 1, window_samples, device=dev)
+            with torch.no_grad():
+                dummy_out = self._seg_model(dummy)
+            num_frames = dummy_out.shape[1]
+            self._frame_step_s = self.WINDOW_S / num_frames
+            # Multilabel output tells us how many speakers the model can track per chunk
+            dummy_ml = self._to_multilabel(dummy_out)
+            self._max_speakers = dummy_ml.shape[2]
+            logger.info(f"Segmentation model loaded: {num_frames} frames for {self.WINDOW_S}s "
+                        f"(~{self._frame_step_s*1000:.1f}ms/frame), max {self._max_speakers} speakers")
+
+            # --- Embedding model ---
+            logger.info("Loading pyannote/wespeaker-voxceleb-resnet34-LM...")
+            self._emb_model = Model.from_pretrained(
+                "pyannote/wespeaker-voxceleb-resnet34-LM",
+                use_auth_token=hf_token,
+            ).to(dev).eval()
+            logger.info("Embedding model loaded (256-dim)")
+
+            self.ready = True
+            logger.info(f"SpeakerDiarizer ready (device={dev}, window={self.WINDOW_S}s, step={self.STEP_S}s)")
+
+        except Exception as e:
+            logger.warning(f"SpeakerDiarizer not available: {e}", exc_info=True)
+
+    def add_audio(self, pcm: np.ndarray):
+        """Feed audio chunk. Non-blocking, thread-safe."""
+        if not self.ready:
+            return
+        with self._lock:
+            self._ring.write(pcm)
+            self._new_samples += len(pcm)
+
+    def process(self) -> list[dict] | None:
+        """
+        Process one sliding window step if enough new audio has arrived.
+        Returns speaker turns with persistent IDs, or None.
+        ~15-30ms on GPU.
+        """
+        if not self.ready:
+            return None
+
+        with self._lock:
+            if self._new_samples < self._step_samples:
+                return None
+            if self._ring.available < self._window_samples:
+                return None
+            window_pcm = self._ring.read_last(self._window_samples)
+            self._new_samples = max(0, self._new_samples - self._step_samples)
+
+        try:
+            return self._process_window(window_pcm)
+        except Exception as e:
+            logger.warning(f"Diarization error: {e}", exc_info=True)
+            return None
+
+    def _process_window(self, pcm: np.ndarray) -> list[dict] | None:
+        """Run segmentation → embedding → Chroma match on one window."""
+        torch = self._torch
+
+        # Step 1: Segmentation — (1, 1, samples) → (1, frames, powerset_classes)
+        waveform = torch.from_numpy(pcm).unsqueeze(0).unsqueeze(0).to(self._device)
+        with torch.no_grad():
+            powerset = self._seg_model(waveform)
+
+        # Step 2: Powerset → multilabel — (1, frames, num_speakers)
+        multilabel = self._to_multilabel(powerset)  # (1, frames, 3)
+        activations = multilabel[0].cpu().numpy()    # (frames, 3)
+        num_frames = activations.shape[0]
+
+        # Step 3: Threshold → binary masks
+        binary = activations > self.TAU_ACTIVE  # (frames, 3)
+
+        # Compute time offset for this window
+        window_start = self._time_offset
+        self._time_offset += self.STEP_S
+
+        turns = []
+        min_speech_frames = int(self.MIN_SPEECH_S / self._frame_step_s)
+
+        for spk_idx in range(binary.shape[1]):
+            spk_mask = binary[:, spk_idx]
+            active_frames = np.sum(spk_mask)
+            if active_frames < min_speech_frames:
+                continue
+
+            # Find contiguous active regions for turn boundaries
+            regions = self._mask_to_regions(spk_mask, window_start)
+            if not regions:
+                continue
+
+            # Step 4: Extract masked audio for embedding
+            # Upsample frame mask to sample rate
+            samples_per_frame = len(pcm) / num_frames
+            sample_mask = np.repeat(spk_mask, int(np.ceil(samples_per_frame)))[:len(pcm)]
+            speaker_audio = pcm * sample_mask.astype(np.float32)
+
+            # Only keep non-silent parts (concatenate active regions)
+            active_samples = speaker_audio[sample_mask]
+            if len(active_samples) < SAMPLE_RATE * 0.3:  # need at least 300ms of actual audio
+                continue
+
+            # Run embedding model
+            emb_input = torch.from_numpy(active_samples).unsqueeze(0).unsqueeze(0).to(self._device)
+            with torch.no_grad():
+                embedding = self._emb_model(emb_input)
+
+            emb_np = embedding.cpu().numpy().flatten()
+            # Normalize to unit vector
+            norm = np.linalg.norm(emb_np)
+            if norm > 0:
+                emb_np = emb_np / norm
+
+            # Step 5: Match against Chroma speaker store
+            speaker_id, is_new = self.speaker_store.match_or_create(emb_np)
+            profile = self.speaker_store.get_profile(speaker_id)
+            speaker_name = profile.get("name") if profile else None
+
+            for region in regions:
+                turns.append({
+                    "start": round(region[0], 3),
+                    "end": round(region[1], 3),
+                    "speaker_id": speaker_id,
+                    "speaker_name": speaker_name,
+                })
+
+        return turns if turns else None
+
+    def _mask_to_regions(self, mask: np.ndarray, window_start: float) -> list[tuple[float, float]]:
+        """Convert a boolean frame mask to a list of (start, end) time regions."""
+        regions = []
+        in_region = False
+        start = 0
+        for i, active in enumerate(mask):
+            if active and not in_region:
+                start = i
+                in_region = True
+            elif not active and in_region:
+                regions.append((
+                    window_start + start * self._frame_step_s,
+                    window_start + i * self._frame_step_s,
+                ))
+                in_region = False
+        if in_region:
+            regions.append((
+                window_start + start * self._frame_step_s,
+                window_start + len(mask) * self._frame_step_s,
+            ))
+        return regions
+
+    def reset(self):
+        """Reset state for a new session."""
+        with self._lock:
+            self._ring.clear()
+            self._new_samples = 0
+            self._time_offset = 0.0
+
+
 class StreamingSTT:
     """
-    Real-time streaming STT backed by WhisperLive + pyannote speaker ID.
-
-    Usage:
-        stt = StreamingSTT(...)
-        client = stt.create_client()   # starts WhisperLive transcription thread
-        client.add_frames(pcm_chunk)   # feed audio (float32, 16kHz)
-        msg = client.adapter.outbox.get_nowait()  # get JSON segment messages
-        client.cleanup()               # stop
+    Real-time streaming STT (WhisperLive) + streaming diarization (pyannote components).
     """
 
     def __init__(self, model_size="large-v3", device="auto", compute_type="float16"):
@@ -53,9 +311,9 @@ class StreamingSTT:
         self.compute_type = compute_type
         self._fw_client_class = None
 
-        # Load faster-whisper model for diarization transcription pass
+        # Load faster-whisper model for diarized transcription passes
         from faster_whisper import WhisperModel
-        logger.info(f"Loading faster-whisper '{model_size}' for diarization...")
+        logger.info(f"Loading faster-whisper '{model_size}'...")
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
         logger.info("Whisper model loaded")
 
@@ -69,37 +327,26 @@ class StreamingSTT:
             logger.error(f"WhisperLive not installed: {e}")
             raise
 
-        # Load pyannote for diarization
-        self.diarize_pipeline = None
-        self._speaker_encoder = None
+        # Login to HuggingFace for gated model access
         hf_token = os.environ.get("HF_TOKEN", "")
-        if hf_token and hf_token != "paste_your_token_here":
+        if hf_token:
             try:
-                from pyannote.audio import Pipeline, Inference, Model
-                import torch
-                logger.info("Loading pyannote...")
-                t0 = time.perf_counter()
-                self.diarize_pipeline = Pipeline.from_pretrained(
-                    "pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
-                self.diarize_pipeline.to(torch.device("cpu"))
-                embedding_model = Model.from_pretrained(
-                    "pyannote/wespeaker-voxceleb-resnet34-LM", use_auth_token=hf_token)
-                self._speaker_encoder = Inference(
-                    embedding_model, window="whole", device=torch.device("cpu"))
-                logger.info(f"Pyannote loaded in {time.perf_counter() - t0:.1f}s")
-            except Exception as e:
-                logger.warning(f"Pyannote not available: {e}")
-        else:
-            logger.info("No HF_TOKEN — diarization disabled")
+                from huggingface_hub import login
+                login(token=hf_token, add_to_git_credential=False)
+            except Exception:
+                pass
 
+        # Speaker profile store (must init before diarizer — diarizer needs it)
         self.speaker_store = SpeakerStore()
 
-    def create_client(self, language=None) -> "WhisperLiveClient":
-        """Create a new WhisperLive client session. Each WS connection gets one."""
-        adapter = WebSocketAdapter()
+        # Initialize custom streaming diarization (pyannote segmentation + embedding)
+        self.diarizer = SpeakerDiarizer(
+            device="cuda", hf_token=hf_token, speaker_store=self.speaker_store
+        )
 
-        # Create WhisperLive client — single_model=True shares the model across clients
-        # so clicking Stream doesn't reload the model every time
+    def create_client(self, language=None) -> "WhisperLiveClient":
+        """Create a new WhisperLive client session."""
+        adapter = WebSocketAdapter()
         client = self._fw_client_class(
             websocket=adapter,
             task="transcribe",
@@ -113,156 +360,7 @@ class StreamingSTT:
             clip_audio=True,
             same_output_threshold=7,
         )
-
         return WhisperLiveClient(client, adapter, self)
-
-    # ── Diarization ───────────────────────────────────────────────────────
-
-    def transcribe_and_diarize(self, audio: np.ndarray) -> list[dict]:
-        """Transcribe + diarize the same audio. Timestamps always aligned. Blocking."""
-        import torch
-
-        # Transcribe
-        segments_iter, info = self.model.transcribe(
-            audio, beam_size=1, language=None, vad_filter=True,
-            vad_parameters=dict(min_speech_duration_ms=250, min_silence_duration_ms=200),
-        )
-        segments = []
-        for seg in segments_iter:
-            segments.append({
-                "start": round(seg.start, 3),
-                "end": round(seg.end, 3),
-                "text": seg.text.strip(),
-                "speaker_id": None,
-                "speaker_name": None,
-            })
-        if not segments:
-            return []
-
-        # Diarize the same audio
-        if self.diarize_pipeline:
-            waveform = torch.from_numpy(audio).unsqueeze(0).float()
-            result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
-            raw_turns = [(t.start, t.end, s) for t, _, s in result.itertracks(yield_label=True)]
-
-            if raw_turns:
-                # Map labels to persistent IDs
-                label_map = {}
-                for label in set(s for _, _, s in raw_turns):
-                    emb = self._extract_embedding(audio, raw_turns, label)
-                    if emb is not None:
-                        sid, _ = self.speaker_store.match_or_create(emb)
-                        label_map[label] = sid
-
-                # Assign speaker to each segment by best overlap
-                for seg in segments:
-                    best_label, best_ov = None, 0.0
-                    for ts, te, label in raw_turns:
-                        ov = max(0, min(seg["end"], te) - max(seg["start"], ts))
-                        if ov > best_ov:
-                            best_ov, best_label = ov, label
-                    if best_label and best_label in label_map:
-                        sid = label_map[best_label]
-                        seg["speaker_id"] = sid
-                        profile = self.speaker_store.get_profile(sid)
-                        if profile and profile.get("name"):
-                            seg["speaker_name"] = profile["name"]
-
-        return segments
-
-    def get_speaker_turns(self, audio: np.ndarray) -> list[dict]:
-        """Run pyannote diarization on audio, return speaker turns with persistent IDs."""
-        if not self.diarize_pipeline:
-            return []
-
-        import torch
-        waveform = torch.from_numpy(audio).unsqueeze(0).float()
-        result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
-        raw_turns = [(t.start, t.end, s) for t, _, s in result.itertracks(yield_label=True)]
-        if not raw_turns:
-            return []
-
-        # Map pyannote labels to persistent speaker IDs
-        label_map = {}
-        for label in set(s for _, _, s in raw_turns):
-            emb = self._extract_embedding(audio, raw_turns, label)
-            if emb is not None:
-                sid, _ = self.speaker_store.match_or_create(emb)
-                label_map[label] = sid
-
-        turns = []
-        for start, end, label in raw_turns:
-            sid = label_map.get(label)
-            if sid:
-                profile = self.speaker_store.get_profile(sid)
-                name = profile.get("name") if profile else None
-                turns.append({
-                    "start": round(start, 3),
-                    "end": round(end, 3),
-                    "speaker_id": sid,
-                    "speaker_name": name,
-                })
-        return turns
-
-    def diarize(self, audio: np.ndarray, segments: list[dict]) -> list[dict]:
-        """Run pyannote diarization + speaker ID on audio. Blocking."""
-        if not self.diarize_pipeline or len(segments) == 0:
-            return segments
-
-        import torch
-        waveform = torch.from_numpy(audio).unsqueeze(0).float()
-        result = self.diarize_pipeline({"waveform": waveform, "sample_rate": SAMPLE_RATE})
-        turns = [(t.start, t.end, s) for t, _, s in result.itertracks(yield_label=True)]
-        if not turns:
-            return segments
-
-        label_map = {}
-        for label in set(s for _, _, s in turns):
-            emb = self._extract_embedding(audio, turns, label)
-            if emb is not None:
-                sid, is_new = self.speaker_store.match_or_create(emb)
-                label_map[label] = sid
-
-        for seg in segments:
-            start = float(seg.get("start", 0))
-            end = float(seg.get("end", 0))
-            best_label, best_ov = None, 0.0
-            for ts, te, label in turns:
-                ov = max(0, min(end, te) - max(start, ts))
-                if ov > best_ov:
-                    best_ov, best_label = ov, label
-            if best_label and best_label in label_map:
-                seg["speaker_id"] = label_map[best_label]
-                profile = self.speaker_store.get_profile(label_map[best_label])
-                if profile and profile.get("name"):
-                    seg["speaker_name"] = profile["name"]
-        return segments
-
-    def _extract_embedding(self, audio, turns, target_label):
-        if not self._speaker_encoder:
-            return None
-        import torch
-        chunks = []
-        for ts, te, label in turns:
-            if label != target_label:
-                continue
-            chunk = audio[int(ts * SAMPLE_RATE):int(te * SAMPLE_RATE)]
-            if len(chunk) > 0:
-                chunks.append(chunk)
-        if not chunks:
-            return None
-        speaker_audio = np.concatenate(chunks)
-        if len(speaker_audio) < int(0.5 * SAMPLE_RATE):
-            return None
-        waveform = torch.from_numpy(speaker_audio).unsqueeze(0).float()
-        emb = self._speaker_encoder({"waveform": waveform, "sample_rate": SAMPLE_RATE})
-        if hasattr(emb, 'numpy'):
-            emb = emb.numpy()
-        emb = np.array(emb).flatten().astype(np.float32)
-        if np.any(np.isnan(emb)) or np.all(emb == 0):
-            return None
-        norm = np.linalg.norm(emb)
-        return emb / norm if norm > 0 else None
 
 
 class WhisperLiveClient:
